@@ -519,14 +519,31 @@ clone_pkg() {
     local src_dir="$2"
     local description="${3:-${yaml_key}}"
 
-    local repo branch is_recursive is_shallow validate_remote clean_generated
+    local repo branch revision commit pinned_ref pinned_field pinned_value is_recursive is_shallow validate_remote clean_generated
 
     repo="$(pkg "${yaml_key}" repo)"
     branch="$(pkg "${yaml_key}" branch)"
+    revision="$(pkg "${yaml_key}" revision)"
+    commit="$(pkg "${yaml_key}" commit)"
     is_recursive="$(pkg "${yaml_key}" recursive)"
     is_shallow="$(pkg "${yaml_key}" shallow)"
     validate_remote="$(pkg "${yaml_key}" validate_remote)"
     clean_generated="$(pkg "${yaml_key}" clean_generated)"
+
+    pinned_ref="${revision:-${commit}}"
+    if [[ -n "${revision}" ]]; then
+        pinned_field="revision"
+    elif [[ -n "${commit}" ]]; then
+        pinned_field="commit"
+    else
+        pinned_field=""
+    fi
+    pinned_value="${pinned_ref:-${branch}}"
+
+    if [[ -n "${pinned_ref}" && "${is_shallow}" == "true" ]]; then
+        warn "${description} requests shallow clone plus pinned ${pinned_field}; cloning full history so ${pinned_field} ${pinned_ref} is available"
+        is_shallow="false"
+    fi
 
     if [[ -d "${src_dir}/.git" ]]; then
         info "${description} already cloned at ${src_dir}"
@@ -542,39 +559,49 @@ clone_pkg() {
             fi
         fi
 
-        # Clean generated files before branch operations (e.g., PyTorch's
+        # Clean generated files before branch/revision operations (e.g., PyTorch's
         # hipify step modifies hundreds of files in-tree)
         if [[ "${clean_generated}" == "true" ]]; then
             local dirty_count
             dirty_count="$(git status --short | wc -l)"
             if [[ "${dirty_count}" -gt 0 ]]; then
                 info "Resetting ${dirty_count} generated files in ${description} tree..."
-                git checkout -- .
-                git submodule foreach --recursive 'git checkout -- . 2>/dev/null || true'
+                git reset --hard HEAD
+                git submodule foreach --recursive 'git reset --hard HEAD 2>/dev/null || true'
             fi
         fi
 
         # Fetch and update
-        local pull_branch="${branch:-$(git branch --show-current)}"
-        git fetch origin "${pull_branch}"
-
-        # Switch branches if needed
-        local current_branch
+        local current_branch fetch_target
         current_branch="$(git branch --show-current)"
-        if [[ -n "${branch}" && "${current_branch}" != "${branch}" ]]; then
-            info "Switching to ${branch} branch..."
-            git checkout "${branch}"
+        if [[ -n "${pinned_ref}" ]]; then
+            fetch_target="${pinned_ref}"
+            info "Fetching pinned ${pinned_field} ${pinned_ref}..."
+            git fetch origin "${fetch_target}"
+            info "Checking out pinned ${pinned_field} ${pinned_ref}..."
+            git checkout --detach FETCH_HEAD
+            git reset --hard FETCH_HEAD
+        else
+            fetch_target="${branch:-${current_branch}}"
+            git fetch origin "${fetch_target}"
+
+            # Switch branches if needed
+            if [[ -n "${branch}" && "${current_branch}" != "${branch}" ]]; then
+                info "Switching to ${branch} branch..."
+                git checkout "${branch}"
+            fi
+            git pull origin "${fetch_target}"
         fi
-        git pull origin "${pull_branch}"
 
         # Update submodules if recursive
         if [[ "${is_recursive}" == "true" ]]; then
-            info "Updating submodules..."
-            git submodule update --init --recursive
+            info "Synchronizing submodules..."
+            git submodule sync --recursive
+            git submodule update --init --recursive --force
         fi
 
         cd "${VLLM_DIR}"
-        success "${description} source updated"
+        success "${description} source updated (${pinned_field:-branch} ${pinned_value})"
         return
     fi
 
@@ -592,7 +619,23 @@ clone_pkg() {
 
     info "Cloning ${description}..."
     git clone "${clone_args[@]}" "${repo}" "${src_dir}"
-    success "${description} cloned to ${src_dir}"
+
+    if [[ -n "${pinned_ref}" ]]; then
+        cd "${src_dir}"
+        info "Fetching pinned ${pinned_field} ${pinned_ref} after clone..."
+        git fetch origin "${pinned_ref}"
+        info "Checking out pinned ${pinned_field} ${pinned_ref}..."
+        git checkout --detach FETCH_HEAD
+        git reset --hard FETCH_HEAD
+        if [[ "${is_recursive}" == "true" ]]; then
+            info "Synchronizing submodules..."
+            git submodule sync --recursive
+            git submodule update --init --recursive --force
+        fi
+        cd "${VLLM_DIR}"
+    fi
+
+    success "${description} cloned to ${src_dir} (${pinned_field:-branch} ${pinned_value})"
 }
 
 # =============================================================================

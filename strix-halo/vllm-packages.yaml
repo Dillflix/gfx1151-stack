@@ -253,6 +253,7 @@ packages:
 
   therock:
     repo: "https://github.com/ROCm/TheRock.git"
+    revision: "d124a31403e86d10a3586b2fed8202e1085a0a62"
     recursive: true
     src_dir: "therock"
     method: cmake
