@@ -348,6 +348,17 @@ packages:
           cmake which unconditionally copies it into the wheel. TheRock
           builds it but doesn't install it when THEROCK_BUILD_TESTING=OFF.
 
+      # 7. Skip CUDA-only libhipcxx atomic_codegen tests when nvcc/cuobjdump are absent
+      - type: sed
+        file: "math-libs/libhipcxx/test/atomic_codegen/CMakeLists.txt"
+        marker: "if (filecheck)"
+        sed_command: '/if (filecheck)/,/endif()/c if (filecheck AND LIBCUDACXX_ENABLE_CUDA)\n  message(\"-- ${filecheck} found... building atomic codegen tests\")\nelse()\n  return()\nendif()'
+        description: >
+          Skip libhipcxx atomic_codegen tests unless the CUDA backend is
+          actually enabled. Upstream gates this directory only on FileCheck,
+          so HIP-only ROCm builds still enter the CUDA-specific test setup and
+          then fail on missing NVIDIA tools like cuobjdump.
+
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python
   # ---------------------------------------------------------------------------

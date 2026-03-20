@@ -122,6 +122,20 @@ install it when `THEROCK_BUILD_TESTING=OFF`.
 
 **Fix**: Copy `FileCheck` from the build tree to the LLVM bin directory.
 
+### 10b. libhipcxx atomic_codegen gated only on FileCheck
+
+**Symptom**: TheRock configure fails in `math-libs/libhipcxx` with:
+`Could not find cuobjdump using the following names: cuobjdump`
+
+**Root cause**: libhipcxx's `test/atomic_codegen` cmake logic is guarded only
+by whether `FileCheck` exists. On HIP-only ROCm builds, `/usr/bin/FileCheck`
+is present, so cmake enters the CUDA-only atomic codegen test path and then
+hard-requires NVIDIA's `cuobjdump`, aborting configuration.
+
+**Fix**: Replace the `if (filecheck)` guard with
+`if (filecheck AND LIBCUDACXX_ENABLE_CUDA)`, so those tests only configure
+when the CUDA backend is actually enabled.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)
