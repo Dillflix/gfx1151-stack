@@ -387,6 +387,18 @@ packages:
           disabled, avoiding the same missing-roctx64 configure failure later in
           the math library build.
 
+      # 9. Disable RCCL ROCTX tracing when profiler stack is disabled
+      - type: sed
+        file: "comm-libs/CMakeLists.txt"
+        marker: "-DROCTX=OFF"
+        marker_absent: true
+        sed_command: '/-DENABLE_MSCCL_KERNEL=OFF/a\      -DROCTX=OFF'
+        description: >
+          Disable RCCL's optional ROCTX tracing integration. Upstream RCCL
+          enables ROCTX by default and later calls find_library(roctx64),
+          which fails under TheRock builds configured with
+          THEROCK_ENABLE_PROFILER=OFF because roctracer/roctx64 are not built.
+
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python
   # ---------------------------------------------------------------------------

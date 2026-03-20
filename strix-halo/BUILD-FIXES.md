@@ -171,6 +171,19 @@ by default as part of its debug-tools feature set.
 skips the optional debugger subproject while preserving the rest of the ROCm
 SDK required by the inference stack.
 
+### 10e. RCCL enables ROCTX even when profiler is disabled
+
+**Symptom**: RCCL configure later fails with:
+`Could not find super-project find_library(NAMES roctx64)`
+
+**Root cause**: RCCL's own cmake enables `ROCTX` by default. When `ROCTX` is
+on, it calls `find_library(roctx64)` and `find_path(roctracer/roctx.h)`.
+That conflicts with this build's `THEROCK_ENABLE_PROFILER=OFF` setting, where
+the profiler stack and `roctx64` are intentionally unavailable.
+
+**Fix**: Inject `-DROCTX=OFF` into TheRock's RCCL subproject cmake args so
+RCCL skips its optional ROCTX tracing path entirely.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)
