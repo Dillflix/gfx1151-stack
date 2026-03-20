@@ -29,51 +29,52 @@
 #   scripts/build-vllm.sh --rebuild   # Force rebuild (clean + build)
 #   scripts/build-vllm.sh --step N    # Run from step N onward
 #
-# Build pipeline (35 steps):
+# Build pipeline (36 steps):
 #   Phase A: ROCm SDK (TheRock — builds amdclang used by everything downstream)
-#     1. Clone TheRock          3. Build TheRock
-#     2. Configure TheRock      4. Validate ROCm
+#     1. Clone TheRock          4. Build TheRock
+#     2. Create bootstrap venv  5. Validate ROCm
+#     3. Configure TheRock
 #
 #   Phase B: CPU Libraries + Python (built with amdclang from Phase A)
-#     5. Build AOCL-Utils       7. Build Python 3.13
-#     6. Build AOCL-LibM        8. Create venv
+#     6. Build AOCL-Utils       8. Build Python 3.13
+#     7. Build AOCL-LibM        9. Create final venv
 #
 #   Phase C: ML Framework (PyTorch + TorchVision, ROCm fork)
-#     9. Clone PyTorch         12. Clone TorchVision
-#    10. Build PyTorch         13. Build TorchVision
-#    11. Validate PyTorch
+#    10. Clone PyTorch         13. Clone TorchVision
+#    11. Build PyTorch         14. Build TorchVision
+#    12. Validate PyTorch
 #
 #   Phase D: Kernel Compilers (Triton + AOTriton)
-#    14. Clone Triton          17. Clone AOTriton
-#    15. Build Triton          18. Build AOTriton
-#    16. Validate Triton
+#    15. Clone Triton          18. Clone AOTriton
+#    16. Build Triton          19. Build AOTriton
+#    17. Validate Triton
 #
 #   Phase E: Inference Engine (vLLM)
-#    19. Clone vLLM             23. Install ROCm requirements
-#    20. Patch amdsmi import    24. Build vLLM (AITER first)
-#    20b. Patch gfx1151 AITER
-#    21. Install build deps
-#    22. use_existing_torch.py
+#    20. Clone vLLM             24. Install ROCm requirements
+#    21. Patch amdsmi import    25. Build vLLM (AITER first)
+#    21b. Patch gfx1151 AITER
+#    22. Install build deps
+#    23. use_existing_torch.py
 #
 #   Phase F: Attention (Flash Attention + AITER)
-#    25. Reinstall amdsmi      28. Build Flash Attention
-#    26. Clone Flash Attention  28b. Rebuild AITER from source (CK-aligned)
-#    27. Patch Flash Attention
+#    26. Reinstall amdsmi      29. Build Flash Attention
+#    27. Clone Flash Attention  29b. Rebuild AITER from source (CK-aligned)
+#    28. Patch Flash Attention
 #
 #   Phase G: Validation + Warmup
-#    29. Smoke test
-#    29b. AITER JIT pre-warm (compile all buildable modules ahead of time)
-#    29c. TunableOp warmup (populate GEMM autotuning CSV)
+#    30. Smoke test
+#    30b. AITER JIT pre-warm (compile all buildable modules ahead of time)
+#    30c. TunableOp warmup (populate GEMM autotuning CSV)
 #
 #   Phase H: Optimized Wheels (Zen 5 native builds for downstream venvs)
-#    30. Build Rust wheels      (orjson, cryptography — AVX-512 + VAES)
-#    31. Build C/C++ wheels     (numpy, sentencepiece, zstandard, asyncpg)
-#    32. Export source wheels    (torch, triton, torchvision, amd-aiter, amdsmi)
+#    31. Build Rust wheels      (orjson, cryptography — AVX-512 + VAES)
+#    32. Build C/C++ wheels     (numpy, sentencepiece, zstandard, asyncpg)
+#    33. Export source wheels    (torch, triton, torchvision, amd-aiter, amdsmi)
 #
 #   Phase I: Lemonade Inference Server (llama.cpp + FLM + ONNX)
-#    33. Clone Lemonade + build llama.cpp with hipBLAS for gfx1151
-#    34. Install Lemonade SDK from PyPI (lemonade-sdk)
-#    35. Validate Lemonade (server smoke test)
+#    34. Clone Lemonade + build llama.cpp with hipBLAS for gfx1151
+#    35. Install Lemonade SDK from PyPI (lemonade-sdk)
+#    36. Validate Lemonade (server smoke test)
 
 set -euo pipefail
 
@@ -383,7 +384,7 @@ bootstrap_tools() {
 }
 
 # Install uv and yq into the venv's bin/ for self-contained builds.
-# Called during create_venv() after the venv is created and activated.
+# Called after a managed venv is created and activated.
 install_tools_to_venv() {
     local venv_bin="${VLLM_VENV}/bin"
 
@@ -896,6 +897,7 @@ validate_pkg() {
 # Generic Build Dependencies Installer
 # =============================================================================
 # Reads build_dependencies from YAML and installs via uv pip install.
+# The caller must activate one of our managed virtual environments first.
 #
 # Usage: install_pkg_deps <pkg_key>
 
@@ -913,6 +915,9 @@ install_pkg_deps() {
 
     if [[ ${#deps[@]} -gt 0 ]]; then
         info "Installing ${#deps[@]} build dependencies for ${pkg_key}..."
+        if [[ -z "${VIRTUAL_ENV:-}" ]]; then
+            die "install_pkg_deps ${pkg_key} requires an active managed virtual environment"
+        fi
         uv pip install "${deps[@]}"
     fi
 }
@@ -981,10 +986,10 @@ generate_env_file() {
 # Phase A: Foundation (AOCL-LibM + Python + ROCm SDK)
 # =============================================================================
 
-# Step 5: Build AOCL-Utils (dependency for AOCL-LibM)
+# Step 6: Build AOCL-Utils (dependency for AOCL-LibM)
 # Runs AFTER TheRock so we can use amdclang (AMD's LLVM fork with -famd-opt).
 build_aocl_utils() {
-    log_step 5 "Build AOCL-Utils (CPU feature detection for Zen 5)"
+    log_step 6 "Build AOCL-Utils (CPU feature detection for Zen 5)"
 
     if should_skip_step aocl_utils; then return; fi
 
@@ -998,7 +1003,7 @@ build_aocl_utils() {
     local amdclang="${LOCAL_PREFIX}/lib/llvm/bin/amdclang"
     local amdclangxx="${LOCAL_PREFIX}/lib/llvm/bin/amdclang++"
     if [[ ! -x "${amdclang}" ]]; then
-        die "amdclang not found at ${amdclang} — run TheRock build first (steps 1-4)"
+        die "amdclang not found at ${amdclang} — run TheRock build first (steps 1-5)"
     fi
 
     # Build without LTO: AOCL-LibM links this .a with GNU ld (needed for its
@@ -1032,11 +1037,11 @@ build_aocl_utils() {
     success "AOCL-Utils built and installed"
 }
 
-# Step 6: Build AOCL-LibM (AMD-optimized math library)
+# Step 7: Build AOCL-LibM (AMD-optimized math library)
 # Runs AFTER TheRock so we can use amdclang which supports -muse-unaligned-vector-move
 # (AOCL-LibM's build system injects this flag for any clang >= 14.0.6).
 build_aocl_libm() {
-    log_step 6 "Build AOCL-LibM (Zen 5 optimized transcendentals)"
+    log_step 7 "Build AOCL-LibM (Zen 5 optimized transcendentals)"
 
     if should_skip_step aocl_libm; then return; fi
 
@@ -1053,7 +1058,7 @@ build_aocl_libm() {
     local amdclang="${LOCAL_PREFIX}/lib/llvm/bin/amdclang"
     local amdclangxx="${LOCAL_PREFIX}/lib/llvm/bin/amdclang++"
     if [[ ! -x "${amdclang}" ]]; then
-        die "amdclang not found at ${amdclang} — run TheRock build first (steps 1-4)"
+        die "amdclang not found at ${amdclang} — run TheRock build first (steps 1-5)"
     fi
 
     # Apply sed patches from YAML (SConscript fixes for amdclang compatibility)
@@ -1104,9 +1109,9 @@ build_aocl_libm() {
     success "AOCL-LibM built with AVX-512 Zen 5 optimizations"
 }
 
-# Step 7: Build Python from source (using amdclang from TheRock)
+# Step 8: Build Python from source (using amdclang from TheRock)
 build_python() {
-    log_step 7 "Build Python ${CPYTHON_VERSION} from source"
+    log_step 8 "Build Python ${CPYTHON_VERSION} from source"
 
     if should_skip_step cpython; then return; fi
 
@@ -1130,7 +1135,7 @@ build_python() {
     local amdclang="${LOCAL_PREFIX}/lib/llvm/bin/amdclang"
     local amdclangxx="${LOCAL_PREFIX}/lib/llvm/bin/amdclang++"
     if [[ ! -x "${amdclang}" ]]; then
-        die "amdclang not found at ${amdclang} — run TheRock build first (steps 1-4)"
+        die "amdclang not found at ${amdclang} — run TheRock build first (steps 1-5)"
     fi
 
     # Note: we do NOT link CPython against AOCL-LibM (-lalm) directly.
@@ -1187,72 +1192,75 @@ print(f'  LTO: {sysconfig.get_config_var(\"LTOCFLAGS\") or \"none\"}')
     success "Python ${CPYTHON_VERSION} built (PGO + LTO + amdclang)"
 }
 
-# Step 8: Create Virtual Environment (using our custom Python)
-create_venv() {
-    log_step 8 "Create virtual environment"
+create_managed_venv() {
+    local step_num="$1"
+    local step_name="$2"
+    local python_bin="$3"
+    local venv_path="$4"
+    local install_deps="$5"
 
-    # Determine which Python to use: prefer our source-built Python
-    local python_bin="python3"
-    if [[ -x "${LOCAL_PREFIX}/bin/python3" ]]; then
-        python_bin="${LOCAL_PREFIX}/bin/python3"
-        info "Using source-built Python: ${python_bin}"
-    else
-        warn "Source-built Python not found, using system python3"
-    fi
+    log_step "${step_num}" "${step_name}"
 
-    if [[ -d "${VLLM_VENV}" && -f "${VLLM_VENV}/bin/python" ]]; then
-        info "Venv already exists at ${VLLM_VENV}"
+    if [[ -d "${venv_path}" && -f "${venv_path}/bin/python" ]]; then
+        info "Virtual environment already exists at ${venv_path}"
 
-        # Check if the venv uses our custom Python
         local venv_python_real
-        venv_python_real="$(readlink -f "${VLLM_VENV}/bin/python" 2>/dev/null || echo 'unknown')"
-        local custom_python_real
-        custom_python_real="$(readlink -f "${python_bin}" 2>/dev/null || echo 'unknown2')"
-        if [[ "${venv_python_real}" != "${custom_python_real}" && -x "${LOCAL_PREFIX}/bin/python3" ]]; then
-            info "Venv uses different Python (${venv_python_real}), recreating with our build..."
-            rm -r "${VLLM_VENV}"
-        else
-            # shellcheck source=/dev/null
-            source "${VLLM_VENV}/bin/activate"
+        venv_python_real="$(readlink -f "${venv_path}/bin/python" 2>/dev/null || echo 'unknown')"
+        local requested_python_real
+        requested_python_real="$(readlink -f "${python_bin}" 2>/dev/null || echo 'unknown')"
 
-            # Ensure ALL essential build tools are present (may be missing from older venvs)
-            if ! python -c 'import yaml, mako, packaging, CppHeaderParser' 2>/dev/null \
-               || ! command -v ninja &>/dev/null; then
-                info "Installing missing build tools into existing venv..."
-                install_pkg_deps venv
-            fi
-
-            # Ensure uv and yq are in the venv
-            install_tools_to_venv
-
-            success "Venv activated"
-            return
+        if [[ "${venv_python_real}" != "${requested_python_real}" ]]; then
+            info "Environment uses different Python (${venv_python_real}), recreating..."
+            rm -rf "${venv_path}"
         fi
     fi
 
-    info "Creating venv at ${VLLM_VENV} using ${python_bin}..."
-    uv venv --python "${python_bin}" "${VLLM_VENV}"
+    if [[ ! -d "${venv_path}" ]]; then
+        info "Creating virtual environment at ${venv_path} using ${python_bin}..."
+        uv venv --python "${python_bin}" "${venv_path}"
+    fi
 
     # shellcheck source=/dev/null
-    source "${VLLM_VENV}/bin/activate"
+    source "${venv_path}/bin/activate"
 
-    # Ensure AOCL-LibM is on the library path for this venv
     if [[ -d "${LOCAL_PREFIX}/lib" ]]; then
         export LD_LIBRARY_PATH="${LOCAL_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     fi
 
-    # Install essential build tools from YAML manifest
-    install_pkg_deps venv
+    if [[ "${install_deps}" == "yes" ]]; then
+        install_pkg_deps venv
+    fi
 
-    # Install uv and yq into venv for self-contained builds
     install_tools_to_venv
 
-    success "Venv created and activated (Python $(python --version 2>&1 | awk '{print $2}'))"
+    success "Environment ready at ${venv_path} (Python $(python --version 2>&1 | awk '{print $2}'))"
 }
 
-# Step 2: Configure TheRock
+# Step 2: Create bootstrap virtual environment (using system python3)
+create_bootstrap_venv() {
+    local python_bin
+    python_bin="$(command -v python3)"
+    [[ -n "${python_bin}" ]] || die "python3 not found on PATH"
+
+    create_managed_venv 2 "Create bootstrap virtual environment" "${python_bin}" "${VLLM_VENV}" yes
+}
+
+# Step 9: Create final virtual environment (using our custom Python)
+create_final_venv() {
+    local python_bin="${LOCAL_PREFIX}/bin/python3"
+    if [[ ! -x "${python_bin}" ]]; then
+        warn "Source-built Python not found, falling back to system python3 for final venv"
+        python_bin="$(command -v python3)"
+    else
+        info "Using source-built Python: ${python_bin}"
+    fi
+
+    create_managed_venv 9 "Create final virtual environment" "${python_bin}" "${VLLM_VENV}" yes
+}
+
+# Step 3: Configure TheRock
 configure_therock() {
-    log_step 2 "Configure TheRock (cmake)"
+    log_step 3 "Configure TheRock (cmake)"
 
     cd "${THEROCK_SRC}"
 
@@ -1265,17 +1273,11 @@ configure_therock() {
 
     info "Configuring TheRock for gfx1151..."
 
-    # TheRock's nested cmake sub-builds (LLVM runtimes, hip-clr, amd-mesa)
-    # each run FindPython3 independently and may find a different Python
-    # than the venv. Install required Python packages into whatever python3
-    # cmake would find on the system, in addition to the venv.
-    local sys_python
-    sys_python="$(command -v python3)"
-    if [[ -n "${sys_python}" ]] && ! "${sys_python}" -c 'import yaml, mako, packaging, CppHeaderParser' 2>/dev/null; then
-        info "Installing TheRock Python deps into system python: ${sys_python}"
-        "${sys_python}" -m pip install --break-system-packages \
-            pyyaml mako packaging "CppHeaderParser==2.7.4" 2>/dev/null || true
+    local bootstrap_python="${VLLM_VENV}/bin/python"
+    if [[ ! -x "${bootstrap_python}" ]]; then
+        die "Bootstrap venv missing at ${VLLM_VENV} — run step 2 before configuring TheRock further"
     fi
+
 
     # TheRock requires GCC — rocprofiler-systems has an explicit GNU
     # compiler check that blocks Clang. Unset all amdclang-specific flags;
@@ -1284,16 +1286,17 @@ configure_therock() {
           CMAKE_EXE_LINKER_FLAGS CMAKE_SHARED_LINKER_FLAGS
 
     # TheRock has deeply nested cmake sub-builds (LLVM -> runtimes) that
-    # each run FindPython3 independently. TheRock now runs BEFORE our venv
-    # exists, so we point at the system python3 (which we installed build
-    # deps into above).
-    # Python3_ROOT_DIR is the cmake hint that propagates through sub-builds.
+    # each run FindPython3 independently. We create a bootstrap venv before
+    # this phase so those sub-builds see a consistent interpreter with the
+    # required Python packages already installed. Python3_ROOT_DIR is the
+    # cmake hint that propagates through sub-builds.
     cmake -B build -GNinja . \
         -DTHEROCK_AMDGPU_FAMILIES=gfx1151 \
         -DCMAKE_C_COMPILER=gcc \
         -DCMAKE_CXX_COMPILER=g++ \
         -DCMAKE_INSTALL_PREFIX="${LOCAL_PREFIX}" \
-        -DPython3_EXECUTABLE="${sys_python}" \
+        -DPython3_EXECUTABLE="${bootstrap_python}" \
+        -DPython3_ROOT_DIR="${VLLM_VENV}" \
         -DTHEROCK_BUILD_TESTING=OFF \
         -DTHEROCK_ENABLE_PROFILER=OFF \
         -DTHEROCK_FLAG_INCLUDE_PROFILER=OFF
@@ -1309,9 +1312,9 @@ configure_therock() {
     success "TheRock configured"
 }
 
-# Step 3: Build TheRock
+# Step 4: Build TheRock
 build_therock() {
-    log_step 3 "Build TheRock (this will take several hours)"
+    log_step 4 "Build TheRock (this will take several hours)"
 
     cd "${THEROCK_SRC}"
 
@@ -1359,9 +1362,9 @@ build_therock() {
     success "TheRock built and installed (${therock_version})"
 }
 
-# Step 4: Validate ROCm
+# Step 5: Validate ROCm
 validate_rocm() {
-    log_step 4 "Validate ROCm installation"
+    log_step 5 "Validate ROCm installation"
 
 
     # Update environment to use locally-built ROCm.
@@ -1439,9 +1442,9 @@ validate_rocm() {
 # Phase B: ML Framework (PyTorch, ROCm fork)
 # =============================================================================
 
-# Step 10: Build PyTorch
+# Step 11: Build PyTorch
 build_pytorch() {
-    log_step 10 "Build PyTorch with ROCm support"
+    log_step 11 "Build PyTorch with ROCm support"
 
     cd "${PYTORCH_SRC}"
 
@@ -1600,9 +1603,9 @@ with zipfile.ZipFile('${_torch_wheel}', 'w', zipfile.ZIP_DEFLATED) as zf:
     success "PyTorch built and installed (wheel: $(basename "${_torch_wheel}"))"
 }
 
-# Step 11: Validate PyTorch
+# Step 12: Validate PyTorch
 validate_pytorch() {
-    log_step 11 "Validate PyTorch GPU access"
+    log_step 12 "Validate PyTorch GPU access"
 
     python -c "
 import torch
@@ -1619,9 +1622,9 @@ else:
     success "PyTorch GPU access verified"
 }
 
-# Step 13: Build TorchVision
+# Step 14: Build TorchVision
 build_torchvision() {
-    log_step 13 "Build TorchVision (against source-built PyTorch)"
+    log_step 14 "Build TorchVision (against source-built PyTorch)"
 
     cd "${TORCHVISION_SRC}"
 
@@ -1663,9 +1666,9 @@ build_torchvision() {
 # Phase D: Kernel Compilers (Triton + AOTriton)
 # =============================================================================
 
-# Step 15: Build Triton
+# Step 16: Build Triton
 build_triton() {
-    log_step 15 "Build Triton with ROCm backend"
+    log_step 16 "Build Triton with ROCm backend"
 
     cd "${TRITON_SRC}"
 
@@ -1683,7 +1686,7 @@ build_triton() {
 
     # Validate ROCm toolchain is available.
     if [[ -z "${ROCM_PATH:-}" || ! -d "${ROCM_PATH}/lib/llvm" ]]; then
-        die "ROCM_PATH is not set or ${ROCM_PATH:-<unset>}/lib/llvm does not exist. Run TheRock build first (steps 5-8)."
+        die "ROCM_PATH is not set or ${ROCM_PATH:-<unset>}/lib/llvm does not exist. Run TheRock build first (steps 1-5)."
     fi
 
     # Ensure vllm-env.sh flags are active
@@ -1738,9 +1741,9 @@ build_triton() {
     success "Triton built with ROCm backend (wheel: $(basename "${_triton_wheel}"))"
 }
 
-# Step 16: Validate Triton
+# Step 17: Validate Triton
 validate_triton() {
-    log_step 16 "Validate Triton"
+    log_step 17 "Validate Triton"
 
     python -c "
 import triton
@@ -1765,9 +1768,9 @@ except ImportError:
     success "Triton validated"
 }
 
-# Step 18: Build AOTriton
+# Step 19: Build AOTriton
 build_aotriton() {
-    log_step 18 "Build AOTriton (pre-compiled attention kernels for gfx1151)"
+    log_step 19 "Build AOTriton (pre-compiled attention kernels for gfx1151)"
 
     cd "${AOTRITON_SRC}"
 
@@ -1816,9 +1819,9 @@ build_aotriton() {
 # Phase D: Inference Engine (vLLM)
 # =============================================================================
 
-# Step 20: Patch amdsmi Import Order
+# Step 21: Patch amdsmi Import Order
 patch_amdsmi_import() {
-    log_step 20 "Patch amdsmi import order in vLLM"
+    log_step 21 "Patch amdsmi import order in vLLM"
 
     local init_file="${VLLM_SRC}/vllm/__init__.py"
 
@@ -1882,7 +1885,7 @@ with open('${init_file}', 'w') as f:
     success "amdsmi import patch applied"
 }
 
-# Step 20b: Patch vLLM for gfx1151 (RDNA 3.5) AITER support
+# Step 21b: Patch vLLM for gfx1151 (RDNA 3.5) AITER support
 #
 # vLLM upstream gates AITER backend selection on gfx9 architectures only.
 # The AMD fork's AITER has full gfx1151 support (chip_info.py maps gfx1151
@@ -1896,7 +1899,7 @@ with open('${init_file}', 'w') as f:
 #   3. rocm.py:get_vit_attn_backend() — ViT attention: KEEP gfx9-only (CK fmha_fwd
 #      rejects ViT dimensions on gfx1151; RDNA 3.5 falls through to TRITON_ATTN)
 patch_vllm_gfx1151() {
-    log_step 20 "Patch vLLM for gfx1151 AITER support"
+    log_step 21 "Patch vLLM for gfx1151 AITER support"
 
     # Apply all sed-type patches from YAML (AITER gfx1x imports, FA backend,
     # ViT revert, rms_norm guard, fusion skip_duplicates, sampler bypass,
@@ -2250,9 +2253,9 @@ with open('${_rocm_aiter_unified}', 'w') as f:
     success "vLLM gfx1151 AITER patches applied"
 }
 
-# Step 21: Install Build Dependencies
+# Step 22: Install Build Dependencies
 install_build_deps() {
-    log_step 21 "Install build dependencies"
+    log_step 22 "Install build dependencies"
 
     # Install build dependencies from YAML manifest
     install_pkg_deps vllm
@@ -2260,9 +2263,9 @@ install_build_deps() {
     success "Build dependencies installed"
 }
 
-# Step 22: Run use_existing_torch.py
+# Step 23: Run use_existing_torch.py
 run_use_existing_torch() {
-    log_step 22 "Run use_existing_torch.py"
+    log_step 23 "Run use_existing_torch.py"
 
     cd "${VLLM_SRC}"
 
@@ -2279,9 +2282,9 @@ run_use_existing_torch() {
     success "use_existing_torch.py completed"
 }
 
-# Step 23: Install ROCm Requirements
+# Step 24: Install ROCm Requirements
 install_rocm_requirements() {
-    log_step 23 "Install ROCm requirements"
+    log_step 24 "Install ROCm requirements"
 
     cd "${VLLM_SRC}"
 
@@ -2356,9 +2359,9 @@ CONSTRAINTS_EOF
     success "ROCm requirements installed"
 }
 
-# Step 24: Build vLLM
+# Step 25: Build vLLM
 build_vllm() {
-    log_step 24 "Build vLLM"
+    log_step 25 "Build vLLM"
 
     cd "${VLLM_SRC}"
 
@@ -2429,9 +2432,9 @@ build_vllm() {
 # Phase F: Attention (Flash Attention + AITER)
 # =============================================================================
 
-# Step 25: Reinstall amdsmi
+# Step 26: Reinstall amdsmi
 reinstall_amdsmi() {
-    log_step 25 "Reinstall amdsmi from ROCm"
+    log_step 26 "Reinstall amdsmi from ROCm"
 
     if [[ -z "${ROCM_PATH:-}" ]]; then
         die "ROCM_PATH not set."
@@ -2458,9 +2461,9 @@ reinstall_amdsmi() {
     success "amdsmi reinstalled from ROCm"
 }
 
-# Step 27: Patch Flash Attention amdsmi Import
+# Step 28: Patch Flash Attention amdsmi Import
 patch_flash_amdsmi() {
-    log_step 27 "Patch Flash Attention amdsmi import"
+    log_step 28 "Patch Flash Attention amdsmi import"
 
     local init_file="${FLASH_ATTN_SRC}/flash_attn/__init__.py"
 
@@ -2491,9 +2494,9 @@ patch_flash_amdsmi() {
     success "Flash Attention amdsmi patch applied"
 }
 
-# Step 28: Build Flash Attention
+# Step 29: Build Flash Attention
 build_flash_attention() {
-    log_step 28 "Build Flash Attention"
+    log_step 29 "Build Flash Attention"
 
     cd "${FLASH_ATTN_SRC}"
 
@@ -2574,7 +2577,7 @@ with open('${_fa_setup}', 'w') as f:
     success "Flash Attention built"
 }
 
-# Step 28b: Rebuild AITER from source
+# Step 29b: Rebuild AITER from source
 # The aiter package includes pre-compiled .cu files (aiter_meta/csrc/cpp_itfs/)
 # and a bundled CK (Composable Kernel) submodule. At runtime, AITER's MHA
 # kernels JIT-compile using CK tile headers from CK_DIR. If the installed
@@ -2587,7 +2590,7 @@ with open('${_fa_setup}', 'w') as f:
 # matching CK submodule, ensuring the compiled .cu interfaces and CK headers
 # are from the same commit.
 rebuild_aiter() {
-    log_step 28 "Rebuild AITER from source (CK-aligned)"
+    log_step 29 "Rebuild AITER from source (CK-aligned)"
 
     local aiter_src="${VLLM_DIR}/pytorch/third_party/aiter"
     if [[ ! -d "${aiter_src}" || ! -f "${aiter_src}/setup.py" ]]; then
@@ -2668,7 +2671,7 @@ rebuild_aiter() {
     success "AITER rebuilt from source (CK commit ${ck_commit})"
 }
 
-# Step 28b: Patch AITER headers for gfx1151 (RDNA 3.5) compatibility
+# Step 29b: Patch AITER headers for gfx1151 (RDNA 3.5) compatibility
 #
 # AITER's HIP kernel sources contain CDNA-only (gfx9) assembly instructions
 # that fail JIT compilation on RDNA 3/3.5 (gfx11xx). Two headers need
@@ -2690,7 +2693,7 @@ rebuild_aiter() {
 # Patches target installed site-packages headers (not source tree) because
 # AITER's JIT reads from the venv, not the build tree.
 patch_aiter_gfx1151() {
-    log_step 28 "Patch AITER headers for gfx1151 RDNA 3.5"
+    log_step 29 "Patch AITER headers for gfx1151 RDNA 3.5"
 
     local site_packages
     site_packages="$(python -c 'import site; print(site.getsitepackages()[0])')"
@@ -3307,9 +3310,9 @@ HIPREDUCE_EOF
 # Phase G: Validation
 # =============================================================================
 
-# Step 29: Smoke Test
+# Step 30: Smoke Test
 smoke_test() {
-    log_step 29 "Smoke test"
+    log_step 30 "Smoke test"
 
     info "Verifying full inference stack..."
 
@@ -3412,7 +3415,7 @@ except ImportError as e:
     info "  All compiled from source with Clang $(${CC} --version | head -1 | grep -oP '\d+\.\d+\.\d+' | head -1)"
 }
 
-# Step 29b: Pre-warm AITER JIT modules
+# Step 30b: Pre-warm AITER JIT modules
 # Compiles all buildable AITER HIP C++ modules ahead of time so that the first
 # vLLM inference request doesn't stall for minutes while modules JIT-compile.
 # In a CK-free build (no Composable Kernel sources), 56 of 72 modules are
@@ -3426,7 +3429,7 @@ except ImportError as e:
 # These failures are non-fatal — the modules target gfx9xx hardware features
 # that RDNA 3.5 doesn't have and would never be called at runtime.
 warmup_aiter_jit() {
-    log_step 29 "Pre-warm AITER JIT modules"
+    log_step 30 "Pre-warm AITER JIT modules"
 
     # Skip if AITER is not enabled
     local aiter_status
@@ -3932,9 +3935,9 @@ print('PASS')
 #   Rust packages:  RUSTFLAGS="-C target-cpu=znver5" enables AVX-512, VAES
 #   C/C++ packages: CFLAGS from vllm-env.sh (-O3 -march=native -flto=thin ...)
 
-# Step 30: Build Rust optimized wheels (orjson, cryptography)
+# Step 31: Build Rust optimized wheels (orjson, cryptography)
 build_rust_wheels() {
-    log_step 30 "Build Rust optimized wheels (orjson, cryptography)"
+    log_step 31 "Build Rust optimized wheels (orjson, cryptography)"
 
     mkdir -p "${WHEELS_DIR}"
 
@@ -4024,9 +4027,9 @@ build_rust_wheels() {
     success "Rust optimized wheels complete"
 }
 
-# Step 31: Build C/C++ optimized wheels
+# Step 32: Build C/C++ optimized wheels
 build_native_wheels() {
-    log_step 31 "Build C/C++ optimized wheels (numpy, sentencepiece, zstandard, asyncpg)"
+    log_step 32 "Build C/C++ optimized wheels (numpy, sentencepiece, zstandard, asyncpg)"
 
     mkdir -p "${WHEELS_DIR}"
 
@@ -4116,9 +4119,9 @@ build_native_wheels() {
     success "C/C++ optimized wheels complete"
 }
 
-# Step 32: Export existing source builds as distributable wheels
+# Step 33: Export existing source builds as distributable wheels
 export_source_wheels() {
-    log_step 32 "Export source-built packages as wheels (torch, triton, torchvision, amd-aiter, amdsmi)"
+    log_step 33 "Export source-built packages as wheels (torch, triton, torchvision, amd-aiter, amdsmi)"
 
     mkdir -p "${WHEELS_DIR}"
 
@@ -4221,11 +4224,11 @@ export_source_wheels() {
     # Verify all required wheels exist (built in earlier steps)
     local _vllm_wheel _fa_wheel
     _vllm_wheel="$(newest_wheel "${WHEELS_DIR}"/vllm-*.whl)"
-    [[ -n "${_vllm_wheel}" ]] || die "vLLM wheel missing from ${WHEELS_DIR} — run step 24 first"
+    [[ -n "${_vllm_wheel}" ]] || die "vLLM wheel missing from ${WHEELS_DIR} — run step 25 first"
     success "vllm wheel exists: $(basename "${_vllm_wheel}")"
 
     _fa_wheel="$(newest_wheel "${WHEELS_DIR}"/flash_attn-*.whl)"
-    [[ -n "${_fa_wheel}" ]] || die "flash_attn wheel missing from ${WHEELS_DIR} — run step 28 first"
+    [[ -n "${_fa_wheel}" ]] || die "flash_attn wheel missing from ${WHEELS_DIR} — run step 29 first"
     success "flash_attn wheel exists: $(basename "${_fa_wheel}")"
 
     # Summary — verify all 13 packages are present
@@ -4254,7 +4257,7 @@ export_source_wheels() {
 # expects them, with a .env file injecting gfx1151 runtime optimizations.
 
 clone_and_build_lemonade() {
-    log_step 33 "Clone Lemonade + build llama.cpp with hipBLAS for gfx1151"
+    log_step 34 "Clone Lemonade + build llama.cpp with hipBLAS for gfx1151"
 
     # Clone both repos using generic clone_pkg (reads flags from YAML)
     clone_pkg lemonade "${LEMONADE_SRC}" "Lemonade SDK"
@@ -4438,7 +4441,7 @@ clone_and_build_lemonade() {
 }
 
 install_lemonade_sdk() {
-    log_step 34 "Install Lemonade SDK"
+    log_step 35 "Install Lemonade SDK"
 
     # The Lemonade project split in v10: the git repo (v10.0.0) is a C++ server,
     # while the Python SDK is published separately as lemonade-sdk on PyPI (v9.1.4).
@@ -4497,7 +4500,7 @@ print(f'  llama-server (vulkan): {path}')
 }
 
 validate_lemonade() {
-    log_step 35 "Validate Lemonade installation"
+    log_step 36 "Validate Lemonade installation"
 
     # Check llama-server binary
     if [[ ! -x "${LLAMACPP_INSTALL_DIR}/llama-server" ]]; then
