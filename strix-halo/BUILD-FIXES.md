@@ -122,6 +122,42 @@ install it when `THEROCK_BUILD_TESTING=OFF`.
 
 **Fix**: Copy `FileCheck` from the build tree to the LLVM bin directory.
 
+### 10b. libhipcxx atomic_codegen gated only on FileCheck
+
+**Symptom**: TheRock configure fails in `math-libs/libhipcxx` with:
+`Could not find cuobjdump using the following names: cuobjdump`
+
+**Root cause**: libhipcxx's `test/atomic_codegen` cmake logic is guarded only
+by whether `FileCheck` exists. On HIP-only ROCm builds, `/usr/bin/FileCheck`
+is present, so cmake enters the CUDA-only atomic codegen test path and then
+hard-requires NVIDIA's `cuobjdump`, aborting configuration.
+
+**Fix**: Replace the `if (filecheck)` guard with
+`if (filecheck AND LIBCUDACXX_ENABLE_CUDA)`, so those tests only configure
+when the CUDA backend is actually enabled.
+
+**Does this involve FileCheck?**: Yes. `FileCheck` is the trigger that causes
+the CUDA-only atomic codegen directory to configure in the first place. The
+fatal missing tool is still `cuobjdump`, but the bad guard is the
+`if (filecheck)` check.
+
+### 10c. roctx64 pre-hooks ignore `THEROCK_ENABLE_PROFILER=OFF`
+
+**Symptom**: TheRock configure fails in RCCL (and potentially rocBLAS or
+rocSPARSE) with:
+`Could not find _therock_legacy_roctx64 using the following names: roctx64`
+
+**Root cause**: Several TheRock pre-hook cmake files unconditionally run a
+legacy `roctx64` link-patch on Linux. Our top-level configuration explicitly
+sets `-DTHEROCK_ENABLE_PROFILER=OFF`, so the profiler stack and `roctx64`
+library are intentionally absent. The pre-hooks should not hard-require
+`roctx64` when profiling is disabled.
+
+**Fix**: Gate the affected Linux pre-hooks on
+`if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)` instead of just `if(NOT WIN32)`.
+This preserves the workaround when the profiler stack is enabled while
+allowing profiler-disabled builds to configure normally.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)
