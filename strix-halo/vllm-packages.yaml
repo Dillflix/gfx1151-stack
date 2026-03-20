@@ -308,7 +308,7 @@ packages:
 
       # 3. Add <cstdint> to yaml-cpp (transitive include removed)
       - type: sed
-        file: "external/rocprofiler-sdk/external-rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp"
+        file: "rocm-systems/projects/rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp"
         marker: "<cstdint>"
         marker_absent: true
         sed_command: "/#include <algorithm>/a #include <cstdint>"
@@ -319,7 +319,7 @@ packages:
 
       # 4. Add <cstdint> to elfio (same transitive include issue)
       - type: sed
-        file: "external/rocprofiler-sdk/external-rocprofiler-sdk/external/elfio/elfio/elf_types.hpp"
+        file: "rocm-systems/projects/rocprofiler-sdk/external/elfio/elfio/elf_types.hpp"
         marker: "<cstdint>"
         marker_absent: true
         sed_command: "/#define ELFTYPES_H/a #include <cstdint>"
@@ -398,6 +398,19 @@ packages:
           enables ROCTX by default and later calls find_library(roctx64),
           which fails under TheRock builds configured with
           THEROCK_ENABLE_PROFILER=OFF because roctracer/roctx64 are not built.
+
+      # 10. Disable hipBLASLt ROCTX marker support when profiler stack is disabled
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DHIPBLASLT_ENABLE_MARKER=OFF"
+        marker_absent: true
+        sed_command: '/-DHIPBLASLT_ENABLE_THEROCK=ON/a\    -DHIPBLASLT_ENABLE_MARKER=OFF'
+        description: >
+          Disable hipBLASLt's optional ROCTX marker integration. hipBLASLt
+          enables markers by default when BUILD_SHARED_LIBS is on, and then
+          hard-fails if roctx64 is not present. That conflicts with
+          THEROCK_ENABLE_PROFILER=OFF, where roctracer/roctx64 are intentionally
+          not built.
 
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python

@@ -184,6 +184,32 @@ the profiler stack and `roctx64` are intentionally unavailable.
 **Fix**: Inject `-DROCTX=OFF` into TheRock's RCCL subproject cmake args so
 RCCL skips its optional ROCTX tracing path entirely.
 
+### 10f. hipBLASLt enables ROCTX markers by default
+
+**Symptom**: hipBLASLt configure fails with:
+`Could not find super-project find_library(NAMES roctx64)`
+
+**Root cause**: hipBLASLt's cmake has `HIPBLASLT_ENABLE_MARKER` enabled by
+default for shared-library builds. When enabled, it calls `find_library(roctx64)`
+and hard-fails if roctracer is absent. That is incompatible with this build's
+`THEROCK_ENABLE_PROFILER=OFF` configuration.
+
+**Fix**: Inject `-DHIPBLASLT_ENABLE_MARKER=OFF` into TheRock's hipBLASLt
+subproject cmake args so it skips the optional ROCTX marker path entirely.
+
+### 10g. rocprofiler-sdk yaml-cpp patch path moved in current TheRock layout
+
+**Symptom**: rocprofiler-sdk later fails compiling vendored yaml-cpp with
+undeclared `uint16_t` / `uint32_t` in `external/yaml-cpp/src/emitterutils.cpp`.
+
+**Root cause**: The source patch for yaml-cpp's missing `<cstdint>` include was
+targeting an old path layout and no longer matched the current TheRock source
+tree. As a result, the workaround never applied.
+
+**Fix**: Update the patch target path to
+`rocm-systems/projects/rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp`
+so the existing `<cstdint>` insertion applies to the actual vendored file.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)
