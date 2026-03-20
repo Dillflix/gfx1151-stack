@@ -122,6 +122,21 @@ install it when `THEROCK_BUILD_TESTING=OFF`.
 
 **Fix**: Copy `FileCheck` from the build tree to the LLVM bin directory.
 
+### 10b. libhipcxx atomic_codegen requires CUDA `cuobjdump`
+
+**Symptom**: TheRock configure fails in `math-libs/libhipcxx` with:
+`Could not find cuobjdump using the following names: cuobjdump`
+
+**Root cause**: libhipcxx's `test/atomic_codegen` cmake logic probes
+`CUDAToolkit`, logs that `nvcc` is missing, but still unconditionally runs
+`find_program(cuobjdump)`. Those tests are CUDA-specific and irrelevant for
+an AMD-only ROCm build, yet they abort configuration when NVIDIA tools are
+not installed.
+
+**Fix**: Insert an early return in
+`math-libs/libhipcxx/test/atomic_codegen/CMakeLists.txt` when
+`CUDAToolkit_FOUND` is false, skipping the CUDA-only test setup entirely.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)

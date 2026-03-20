@@ -348,6 +348,19 @@ packages:
           cmake which unconditionally copies it into the wheel. TheRock
           builds it but doesn't install it when THEROCK_BUILD_TESTING=OFF.
 
+      # 7. Skip CUDA-only libhipcxx atomic_codegen tests when nvcc/cuobjdump are absent
+      - type: sed
+        file: "math-libs/libhipcxx/test/atomic_codegen/CMakeLists.txt"
+        marker: "if(NOT CUDAToolkit_FOUND)"
+        marker_absent: true
+        sed_command: '/find_program(CUOBJDUMP_EXECUTABLE cuobjdump)/i if(NOT CUDAToolkit_FOUND)\n  message(STATUS "Skipping libhipcxx atomic codegen tests: CUDAToolkit/cuobjdump not found for this ROCm-only build")\n  return()\nendif()\n'
+        description: >
+          Skip libhipcxx atomic_codegen test configuration when CUDA toolkit
+          is unavailable. On AMD-only TheRock builds, CMake probes
+          CUDAToolkit, reports nvcc missing, then still hard-requires
+          cuobjdump for a CUDA-specific test directory. Returning early keeps
+          ROCm builds from failing on an irrelevant NVIDIA-only dependency.
+
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python
   # ---------------------------------------------------------------------------
