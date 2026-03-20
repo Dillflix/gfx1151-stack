@@ -158,6 +158,19 @@ library are intentionally absent. The pre-hooks should not hard-require
 This preserves the workaround when the profiler stack is enabled while
 allowing profiler-disabled builds to configure normally.
 
+### 10d. Disable ROCgdb in TheRock configure
+
+**Symptom**: TheRock build later fails in `debug-tools/rocgdb` even though the
+core ROCm compiler/runtime libraries continue building in parallel.
+
+**Root cause**: ROCgdb is an optional ROCm debugger component. It is not needed
+for building or running the vLLM/PyTorch/Triton stack, but TheRock enables it
+by default as part of its debug-tools feature set.
+
+**Fix**: Pass `-DTHEROCK_ENABLE_ROCGDB=OFF` during TheRock configure. This
+skips the optional debugger subproject while preserving the rest of the ROCm
+SDK required by the inference stack.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)

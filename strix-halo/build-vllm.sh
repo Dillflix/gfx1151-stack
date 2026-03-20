@@ -1298,6 +1298,7 @@ configure_therock() {
         -DPython3_EXECUTABLE="${bootstrap_python}" \
         -DPython3_ROOT_DIR="${VLLM_VENV}" \
         -DTHEROCK_BUILD_TESTING=OFF \
+        -DTHEROCK_ENABLE_ROCGDB=OFF \
         -DTHEROCK_ENABLE_PROFILER=OFF \
         -DTHEROCK_FLAG_INCLUDE_PROFILER=OFF
         # Profiler disabled: rocprofiler-sdk's vendored yaml-cpp and elfio
