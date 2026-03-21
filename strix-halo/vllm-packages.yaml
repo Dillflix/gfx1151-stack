@@ -458,6 +458,17 @@ packages:
           whenever BUILD_SHARED_LIBS is on, so TheRock still fails in
           projects/rocblas/library/CMakeLists.txt even when -DROCTX=OFF was
           injected at the super-project layer.
+      - type: sed
+        file: "rocm-libraries/projects/rocblas/library/CMakeLists.txt"
+        marker: 'add_compile_definitions("DISABLE_ROCTX")'
+        marker_absent: true
+        sed_command: '/--unwindlib=libgcc)/a \
+  if(NOT ROCTX)\n    add_compile_definitions("DISABLE_ROCTX")\n  endif()'
+        description: >
+          When ROCTX is explicitly disabled, still define DISABLE_ROCTX for
+          rocBLAS sources before the shared-library probe block. This keeps
+          files like logging.cpp from including roctracer/roctx.h after the
+          find_path()/find_library() probe itself has been skipped.
 
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python

@@ -223,9 +223,11 @@ header/library probe still runs in shared-library builds even when profiling is
 explicitly disabled.
 
 **Fix**: Keep injecting `-DROCTX=OFF` from TheRock's `math-libs/BLAS/CMakeLists.txt`,
-and also patch `rocm-libraries/projects/rocblas/library/CMakeLists.txt` so the
-ROCTX probe is guarded by `if(BUILD_SHARED_LIBS AND ROCTX)` instead of only
-`if(BUILD_SHARED_LIBS)`.
+and patch `rocm-libraries/projects/rocblas/library/CMakeLists.txt` in two ways:
+first, guard the ROCTX probe with `if(BUILD_SHARED_LIBS AND ROCTX)` instead of
+only `if(BUILD_SHARED_LIBS)`; second, add `target_compile_definitions(... DISABLE_ROCTX)`
+when `ROCTX` is off so sources like `logging.cpp` do not include
+`<roctracer/roctx.h>` after the probe has been skipped.
 
 
 ### 10i. ROCR-Runtime OpenCL blit kernels do not know the device-lib path while bootstrapping
