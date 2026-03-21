@@ -308,7 +308,7 @@ packages:
 
       # 3. Add <cstdint> to yaml-cpp (transitive include removed)
       - type: sed
-        file: "external/rocprofiler-sdk/external-rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp"
+        file: "rocm-systems/projects/rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp"
         marker: "<cstdint>"
         marker_absent: true
         sed_command: "/#include <algorithm>/a #include <cstdint>"
@@ -319,7 +319,7 @@ packages:
 
       # 4. Add <cstdint> to elfio (same transitive include issue)
       - type: sed
-        file: "external/rocprofiler-sdk/external-rocprofiler-sdk/external/elfio/elfio/elf_types.hpp"
+        file: "rocm-systems/projects/rocprofiler-sdk/external/elfio/elfio/elf_types.hpp"
         marker: "<cstdint>"
         marker_absent: true
         sed_command: "/#define ELFTYPES_H/a #include <cstdint>"
@@ -347,6 +347,152 @@ packages:
           Install FileCheck into LLVM toolchain. Required by Triton's
           cmake which unconditionally copies it into the wheel. TheRock
           builds it but doesn't install it when THEROCK_BUILD_TESTING=OFF.
+
+      # 7. Skip CUDA-only libhipcxx atomic_codegen tests when nvcc/cuobjdump are absent
+      - type: sed
+        file: "math-libs/libhipcxx/test/atomic_codegen/CMakeLists.txt"
+        marker: "if (filecheck)"
+        sed_command: '/if (filecheck)/,/endif()/c if (filecheck AND LIBCUDACXX_ENABLE_CUDA)\n  message(\"-- ${filecheck} found... building atomic codegen tests\")\nelse()\n  return()\nendif()'
+        description: >
+          Skip libhipcxx atomic_codegen tests unless the CUDA backend is
+          actually enabled. Upstream gates this directory only on FileCheck,
+          so HIP-only ROCm builds still enter the CUDA-specific test setup and
+          then fail on missing NVIDIA tools like cuobjdump.
+
+
+      # 8. ROCR-Runtime OpenCL blit kernels need an explicit ROCm device-lib path
+      - type: sed
+        file: "rocm-systems/projects/rocr-runtime/runtime/hsa-runtime/image/blit_src/CMakeLists.txt"
+        marker: "--rocm-device-lib-path"
+        marker_absent: true
+        sed_command: '/function(gen_kernel_bc TARGET_ID INPUT_FILE OUTPUT_FILE)/a \
+  set(_rocm_device_lib_path "")\n  foreach(_candidate ${CMAKE_PREFIX_PATH}/llvm/amdgcn/bitcode ${CMAKE_PREFIX_PATH}/amdgcn/bitcode)\n    if(EXISTS "${_candidate}")\n      set(_rocm_device_lib_path "${_candidate}")\n      break()\n    endif()\n  endforeach()\n  if(_rocm_device_lib_path)\n    set(_rocm_device_lib_flag "--rocm-device-lib-path=${_rocm_device_lib_path}")\n  endif()'
+        description: >
+          Teach ROCR-Runtime's OpenCL blit kernel generator where ROCm device
+          bitcode lives during TheRock builds. Its custom clang -x cl command
+          does not inherit a usable default ROCm install root while bootstrapping,
+          so current clang releases abort unless --rocm-device-lib-path points
+          at the amdgcn/bitcode directory under CMAKE_PREFIX_PATH.
+      - type: sed
+        file: "rocm-systems/projects/rocr-runtime/runtime/hsa-runtime/image/blit_src/CMakeLists.txt"
+        marker: "-mcode-object-version=4 -o"
+        sed_command: 's|-mcode-object-version=4 |-mcode-object-version=4 ${_rocm_device_lib_flag} |'
+        description: >
+          Append the detected ROCm device-lib path to ROCR-Runtime's clang -x cl
+          blit compile command so the generated ocl_blit_object_* bitcode builds
+          against the just-built device libraries instead of failing discovery.
+
+      # 8. Skip roctx64 patch hooks when profiler stack is disabled
+      - type: sed
+        file: "comm-libs/pre_hook_rccl.cmake"
+        marker: "if(NOT WIN32)"
+        sed_command: "s|if(NOT WIN32)|if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)|"
+        description: >
+          Skip RCCL's legacy roctx64 link patch when TheRock profiler support
+          is disabled. The top-level build config sets THEROCK_ENABLE_PROFILER=OFF,
+          so roctracer/roctx64 are intentionally unavailable and should not be
+          hard-required during RCCL configure.
+
+      - type: sed
+        file: "math-libs/BLAS/pre_hook_rocBLAS.cmake"
+        marker: "if(NOT WIN32)"
+        sed_command: "s|if(NOT WIN32)|if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)|"
+        description: >
+          Skip rocBLAS' legacy roctx64 link patch when the profiler stack is
+          disabled, matching the top-level THEROCK_ENABLE_PROFILER=OFF build.
+
+      - type: sed
+        file: "math-libs/BLAS/pre_hook_rocSPARSE.cmake"
+        marker: "if(NOT WIN32)"
+        sed_command: "s|if(NOT WIN32)|if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)|"
+        description: >
+          Skip rocSPARSE's legacy roctx64 link patch when the profiler stack is
+          disabled, avoiding the same missing-roctx64 configure failure later in
+          the math library build.
+
+      # 9. Disable RCCL ROCTX tracing when profiler stack is disabled
+      - type: sed
+        file: "comm-libs/CMakeLists.txt"
+        marker: "-DROCTX=OFF"
+        marker_absent: true
+        sed_command: '/-DENABLE_MSCCL_KERNEL=OFF/a\      -DROCTX=OFF'
+        description: >
+          Disable RCCL's optional ROCTX tracing integration. Upstream RCCL
+          enables ROCTX by default and later calls find_library(roctx64),
+          which fails under TheRock builds configured with
+          THEROCK_ENABLE_PROFILER=OFF because roctracer/roctx64 are not built.
+
+      # 10. Disable hipBLASLt ROCTX marker support when profiler stack is disabled
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DHIPBLASLT_ENABLE_MARKER=OFF"
+        marker_absent: true
+        sed_command: '/-DHIPBLASLT_ENABLE_THEROCK=ON/a\    -DHIPBLASLT_ENABLE_MARKER=OFF'
+        description: >
+          Disable hipBLASLt's optional ROCTX marker integration. hipBLASLt
+          enables markers by default when BUILD_SHARED_LIBS is on, and then
+          hard-fails if roctx64 is not present. That conflicts with
+          THEROCK_ENABLE_PROFILER=OFF, where roctracer/roctx64 are intentionally
+          not built.
+
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DHIPSPARSELT_ENABLE_MARKER=OFF"
+        marker_absent: true
+        sed_command: '/-DHIPSPARSELT_ENABLE_THEROCK=ON/a\    -DHIPSPARSELT_ENABLE_MARKER=OFF'
+        description: >
+          Disable hipSPARSELt's optional ROCTX marker integration. hipSPARSELt
+          defaults HIPSPARSELT_ENABLE_MARKER to ON on non-Windows builds and
+          then hard-requires roctx64/roctracer during configure, which is
+          incompatible with THEROCK_ENABLE_PROFILER=OFF.
+
+      # 11. Disable rocBLAS ROCTX integration when profiler stack is disabled
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DROCTX=OFF"
+        marker_absent: true
+        sed_command: '0,/-DLINK_BLIS=OFF/s//-DLINK_BLIS=OFF\
+    -DROCTX=OFF/'
+        description: >
+          Disable rocBLAS's optional ROCTX integration. rocBLAS later probes
+          for roctracer headers and roctx when this path is enabled, which
+          conflicts with THEROCK_ENABLE_PROFILER=OFF where those profiler
+          components are intentionally unavailable.
+
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DBUILD_WITH_ROCTX=OFF"
+        marker_absent: true
+        sed_command: '0,/-DBUILD_CLIENTS_SAMPLES=OFF/s//-DBUILD_CLIENTS_SAMPLES=OFF\
+    -DBUILD_WITH_ROCTX=OFF/'
+        description: >
+          Disable rocSPARSE's optional ROCTX tracing path at the TheRock
+          subproject layer. rocSPARSE already guards its roctx header/library
+          probing with BUILD_WITH_ROCTX, but TheRock does not currently pass
+          that option, so profiler-disabled builds still fail in the explicit
+          find_path/find_library override.
+
+      - type: sed
+        file: "rocm-libraries/projects/rocblas/library/CMakeLists.txt"
+        marker: "if(BUILD_SHARED_LIBS)"
+        sed_command: 's|if(BUILD_SHARED_LIBS)|if(BUILD_SHARED_LIBS AND ROCTX)|'
+        description: >
+          Gate rocBLAS's shared-library ROCTX header/library probing on the
+          ROCTX cache option as well. Upstream currently probes roctracer/roctx.h
+          whenever BUILD_SHARED_LIBS is on, so TheRock still fails in
+          projects/rocblas/library/CMakeLists.txt even when -DROCTX=OFF was
+          injected at the super-project layer.
+      - type: sed
+        file: "rocm-libraries/projects/rocblas/library/CMakeLists.txt"
+        marker: 'add_compile_definitions("DISABLE_ROCTX")'
+        marker_absent: true
+        sed_command: '/--unwindlib=libgcc)/a \
+  if(NOT ROCTX)\n    add_compile_definitions("DISABLE_ROCTX")\n  endif()'
+        description: >
+          When ROCTX is explicitly disabled, still define DISABLE_ROCTX for
+          rocBLAS sources before the shared-library probe block. This keeps
+          files like logging.cpp from including roctracer/roctx.h after the
+          find_path()/find_library() probe itself has been skipped.
 
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python

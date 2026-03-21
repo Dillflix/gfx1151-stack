@@ -122,6 +122,178 @@ install it when `THEROCK_BUILD_TESTING=OFF`.
 
 **Fix**: Copy `FileCheck` from the build tree to the LLVM bin directory.
 
+### 10b. libhipcxx atomic_codegen gated only on FileCheck
+
+**Symptom**: TheRock configure fails in `math-libs/libhipcxx` with:
+`Could not find cuobjdump using the following names: cuobjdump`
+
+**Root cause**: libhipcxx's `test/atomic_codegen` cmake logic is guarded only
+by whether `FileCheck` exists. On HIP-only ROCm builds, `/usr/bin/FileCheck`
+is present, so cmake enters the CUDA-only atomic codegen test path and then
+hard-requires NVIDIA's `cuobjdump`, aborting configuration.
+
+**Fix**: Replace the `if (filecheck)` guard with
+`if (filecheck AND LIBCUDACXX_ENABLE_CUDA)`, so those tests only configure
+when the CUDA backend is actually enabled.
+
+**Does this involve FileCheck?**: Yes. `FileCheck` is the trigger that causes
+the CUDA-only atomic codegen directory to configure in the first place. The
+fatal missing tool is still `cuobjdump`, but the bad guard is the
+`if (filecheck)` check.
+
+### 10c. roctx64 pre-hooks ignore `THEROCK_ENABLE_PROFILER=OFF`
+
+**Symptom**: TheRock configure fails in RCCL (and potentially rocBLAS or
+rocSPARSE) with:
+`Could not find _therock_legacy_roctx64 using the following names: roctx64`
+
+**Root cause**: Several TheRock pre-hook cmake files unconditionally run a
+legacy `roctx64` link-patch on Linux. Our top-level configuration explicitly
+sets `-DTHEROCK_ENABLE_PROFILER=OFF`, so the profiler stack and `roctx64`
+library are intentionally absent. The pre-hooks should not hard-require
+`roctx64` when profiling is disabled.
+
+**Fix**: Gate the affected Linux pre-hooks on
+`if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)` instead of just `if(NOT WIN32)`.
+This preserves the workaround when the profiler stack is enabled while
+allowing profiler-disabled builds to configure normally.
+
+### 10d. Disable ROCgdb in TheRock configure
+
+**Symptom**: TheRock build later fails in `debug-tools/rocgdb` even though the
+core ROCm compiler/runtime libraries continue building in parallel.
+
+**Root cause**: ROCgdb is an optional ROCm debugger component. It is not needed
+for building or running the vLLM/PyTorch/Triton stack, but TheRock enables it
+by default as part of its debug-tools feature set.
+
+**Fix**: Pass `-DTHEROCK_ENABLE_ROCGDB=OFF` during TheRock configure. This
+skips the optional debugger subproject while preserving the rest of the ROCm
+SDK required by the inference stack.
+
+### 10e. RCCL enables ROCTX even when profiler is disabled
+
+**Symptom**: RCCL configure later fails with:
+`Could not find super-project find_library(NAMES roctx64)`
+
+**Root cause**: RCCL's own cmake enables `ROCTX` by default. When `ROCTX` is
+on, it calls `find_library(roctx64)` and `find_path(roctracer/roctx.h)`.
+That conflicts with this build's `THEROCK_ENABLE_PROFILER=OFF` setting, where
+the profiler stack and `roctx64` are intentionally unavailable.
+
+**Fix**: Inject `-DROCTX=OFF` into TheRock's RCCL subproject cmake args so
+RCCL skips its optional ROCTX tracing path entirely.
+
+### 10f. hipBLASLt enables ROCTX markers by default
+
+**Symptom**: hipBLASLt configure fails with:
+`Could not find super-project find_library(NAMES roctx64)`
+
+**Root cause**: hipBLASLt's cmake has `HIPBLASLT_ENABLE_MARKER` enabled by
+default for shared-library builds. When enabled, it calls `find_library(roctx64)`
+and hard-fails if roctracer is absent. That is incompatible with this build's
+`THEROCK_ENABLE_PROFILER=OFF` configuration.
+
+**Fix**: Inject `-DHIPBLASLT_ENABLE_MARKER=OFF` into TheRock's hipBLASLt
+subproject cmake args so it skips the optional ROCTX marker path entirely.
+
+### 10f2. hipSPARSELt enables ROCTX markers by default
+
+**Symptom**: hipSPARSELt configure fails with:
+`Could not find ROCTX64_LIBRARY using the following names: roctx64, libroctx64`
+
+**Root cause**: hipSPARSELt's top-level cmake defines
+`HIPSPARSELT_ENABLE_MARKER` as ON by default on non-Windows builds. When that
+option is enabled, it unconditionally calls `find_library(ROCTX64_LIBRARY ...)`
+and `find_path(roctracer/roctx.h ...)`. That conflicts with this build's
+`THEROCK_ENABLE_PROFILER=OFF` configuration, where roctracer/roctx64 are
+intentionally absent.
+
+**Fix**: Inject `-DHIPSPARSELT_ENABLE_MARKER=OFF` into TheRock's hipSPARSELt
+subproject cmake args so configure skips the optional ROCTX marker path.
+
+### 10g. rocprofiler-sdk yaml-cpp patch path moved in current TheRock layout
+
+**Symptom**: rocprofiler-sdk later fails compiling vendored yaml-cpp with
+undeclared `uint16_t` / `uint32_t` in `external/yaml-cpp/src/emitterutils.cpp`.
+
+**Root cause**: The source patch for yaml-cpp's missing `<cstdint>` include was
+targeting an old path layout and no longer matched the current TheRock source
+tree. As a result, the workaround never applied.
+
+**Fix**: Update the patch target path to
+`rocm-systems/projects/rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp`
+so the existing `<cstdint>` insertion applies to the actual vendored file.
+
+### 10h. rocBLAS still probes roctracer headers when profiler is disabled
+
+**Symptom**: rocBLAS configure fails with:
+`Could not find super-project find_path(... roctracer/roctx.h ...)`
+even though TheRock already passes `-DROCTX=OFF` to the rocBLAS subproject.
+
+**Root cause**: rocBLAS's `projects/rocblas/library/CMakeLists.txt` gates the
+ROCTX probe only on `BUILD_SHARED_LIBS`. Its `find_path(roctracer/roctx.h)` and
+`find_library(roctx64)` block does not honor the `ROCTX` cache option, so the
+header/library probe still runs in shared-library builds even when profiling is
+explicitly disabled.
+
+**Fix**: Keep injecting `-DROCTX=OFF` from TheRock's `math-libs/BLAS/CMakeLists.txt`,
+and patch `rocm-libraries/projects/rocblas/library/CMakeLists.txt` in two ways:
+first, guard the ROCTX probe with `if(BUILD_SHARED_LIBS AND ROCTX)` instead of
+only `if(BUILD_SHARED_LIBS)`; second, add `target_compile_definitions(... DISABLE_ROCTX)`
+when `ROCTX` is off so sources like `logging.cpp` do not include
+`<roctracer/roctx.h>` after the probe has been skipped.
+
+
+### 10h2. rocSPARSE still probes roctracer headers unless BUILD_WITH_ROCTX is turned off
+
+**Symptom**: rocSPARSE configure fails with:
+`Could not find super-project find_path(... roctracer/roctx.h ...)`
+
+**Root cause**: Unlike rocBLAS, rocSPARSE already has an upstream
+`if(BUILD_SHARED_LIBS AND BUILD_WITH_ROCTX)` guard around its ROCTX probing in
+`projects/rocsparse/library/CMakeLists.txt`. However, TheRock's
+`math-libs/BLAS/CMakeLists.txt` does not pass `-DBUILD_WITH_ROCTX=OFF` to the
+rocSPARSE subproject, so the guarded probe still stays enabled by default and
+hits the explicit super-project finder when profiler components are absent.
+
+**Fix**: Inject `-DBUILD_WITH_ROCTX=OFF` into TheRock's rocSPARSE subproject
+cmake args so rocSPARSE skips the optional roctx header/library probe entirely.
+
+### 10i. ROCR-Runtime OpenCL blit kernels do not know the device-lib path while bootstrapping
+
+**Symptom**: TheRock build fails in `rocm-systems/projects/rocr-runtime` while
+building `opencl_blit_objects` with a command like:
+`clang -O2 -x cl ... imageblit_kernels.cl`
+followed by:
+`cannot find ROCm device library; provide its path via '--rocm-path' or '--rocm-device-lib-path'`
+
+**Root cause**: `runtime/hsa-runtime/image/blit_src/CMakeLists.txt` hard-codes
+a `clang -x cl` custom command for the OpenCL blit kernels, but it does not
+pass any ROCm install root or device-library path. During a TheRock bootstrap
+build, clang cannot infer the just-built `amdgcn/bitcode` directory on its own,
+so current clang releases abort instead of compiling the embedded blit objects.
+
+**Fix**: Patch `rocm-systems/projects/rocr-runtime/runtime/hsa-runtime/image/blit_src/CMakeLists.txt`
+to detect `${CMAKE_PREFIX_PATH}/llvm/amdgcn/bitcode` or
+`${CMAKE_PREFIX_PATH}/amdgcn/bitcode` and append
+`--rocm-device-lib-path=<detected path>` to the generated `clang -x cl` command.
+
+### 25b. YAML patchelf RPATH expansion treated `$ORIGIN` as a shell variable
+
+**Symptom**: `build-vllm.sh` aborts while applying `patchelf_rpath` patches
+with:
+`./build-vllm.sh: line 754: ORIGIN: unbound variable`
+
+**Root cause**: The YAML-driven patch helper expanded RPATH templates with
+`eval echo`. That works for `${LOCAL_PREFIX}` but also tries to expand ELF
+loader tokens like `$ORIGIN` as shell variables, which fails under
+`set -u`.
+
+**Fix**: Escape `$ORIGIN` before running `eval echo` so shell variable
+expansion still resolves our repo variables while preserving the literal ELF
+RPATH token for `patchelf`.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)
