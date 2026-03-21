@@ -210,6 +210,19 @@ tree. As a result, the workaround never applied.
 `rocm-systems/projects/rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp`
 so the existing `<cstdint>` insertion applies to the actual vendored file.
 
+### 10h. rocBLAS still probes roctracer headers when profiler is disabled
+
+**Symptom**: rocBLAS configure fails with:
+`Could not find super-project find_path(... roctracer/roctx.h ...)`
+
+**Root cause**: rocBLAS enables an optional ROCTX integration path and later
+looks for `roctracer/roctx.h`. That is incompatible with this build's
+`THEROCK_ENABLE_PROFILER=OFF` configuration, where roctracer/roctx are
+intentionally not built.
+
+**Fix**: Inject `-DROCTX=OFF` into TheRock's rocBLAS subproject cmake args so
+rocBLAS skips the optional ROCTX path entirely.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)

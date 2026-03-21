@@ -412,6 +412,19 @@ packages:
           THEROCK_ENABLE_PROFILER=OFF, where roctracer/roctx64 are intentionally
           not built.
 
+      # 11. Disable rocBLAS ROCTX integration when profiler stack is disabled
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DROCTX=OFF"
+        marker_absent: true
+        sed_command: '0,/-DLINK_BLIS=OFF/s//-DLINK_BLIS=OFF\
+    -DROCTX=OFF/'
+        description: >
+          Disable rocBLAS's optional ROCTX integration. rocBLAS later probes
+          for roctracer headers and roctx when this path is enabled, which
+          conflicts with THEROCK_ENABLE_PROFILER=OFF where those profiler
+          components are intentionally unavailable.
+
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python
   # ---------------------------------------------------------------------------
