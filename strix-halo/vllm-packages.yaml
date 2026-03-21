@@ -308,7 +308,7 @@ packages:
 
       # 3. Add <cstdint> to yaml-cpp (transitive include removed)
       - type: sed
-        file: "external/rocprofiler-sdk/external-rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp"
+        file: "rocm-systems/projects/rocprofiler-sdk/external/yaml-cpp/src/emitterutils.cpp"
         marker: "<cstdint>"
         marker_absent: true
         sed_command: "/#include <algorithm>/a #include <cstdint>"
@@ -319,7 +319,7 @@ packages:
 
       # 4. Add <cstdint> to elfio (same transitive include issue)
       - type: sed
-        file: "external/rocprofiler-sdk/external-rocprofiler-sdk/external/elfio/elfio/elf_types.hpp"
+        file: "rocm-systems/projects/rocprofiler-sdk/external/elfio/elfio/elf_types.hpp"
         marker: "<cstdint>"
         marker_absent: true
         sed_command: "/#define ELFTYPES_H/a #include <cstdint>"
@@ -347,6 +347,83 @@ packages:
           Install FileCheck into LLVM toolchain. Required by Triton's
           cmake which unconditionally copies it into the wheel. TheRock
           builds it but doesn't install it when THEROCK_BUILD_TESTING=OFF.
+
+      # 7. Skip CUDA-only libhipcxx atomic_codegen tests when nvcc/cuobjdump are absent
+      - type: sed
+        file: "math-libs/libhipcxx/test/atomic_codegen/CMakeLists.txt"
+        marker: "if (filecheck)"
+        sed_command: '/if (filecheck)/,/endif()/c if (filecheck AND LIBCUDACXX_ENABLE_CUDA)\n  message(\"-- ${filecheck} found... building atomic codegen tests\")\nelse()\n  return()\nendif()'
+        description: >
+          Skip libhipcxx atomic_codegen tests unless the CUDA backend is
+          actually enabled. Upstream gates this directory only on FileCheck,
+          so HIP-only ROCm builds still enter the CUDA-specific test setup and
+          then fail on missing NVIDIA tools like cuobjdump.
+
+      # 8. Skip roctx64 patch hooks when profiler stack is disabled
+      - type: sed
+        file: "comm-libs/pre_hook_rccl.cmake"
+        marker: "if(NOT WIN32)"
+        sed_command: "s|if(NOT WIN32)|if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)|"
+        description: >
+          Skip RCCL's legacy roctx64 link patch when TheRock profiler support
+          is disabled. The top-level build config sets THEROCK_ENABLE_PROFILER=OFF,
+          so roctracer/roctx64 are intentionally unavailable and should not be
+          hard-required during RCCL configure.
+
+      - type: sed
+        file: "math-libs/BLAS/pre_hook_rocBLAS.cmake"
+        marker: "if(NOT WIN32)"
+        sed_command: "s|if(NOT WIN32)|if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)|"
+        description: >
+          Skip rocBLAS' legacy roctx64 link patch when the profiler stack is
+          disabled, matching the top-level THEROCK_ENABLE_PROFILER=OFF build.
+
+      - type: sed
+        file: "math-libs/BLAS/pre_hook_rocSPARSE.cmake"
+        marker: "if(NOT WIN32)"
+        sed_command: "s|if(NOT WIN32)|if(NOT WIN32 AND THEROCK_ENABLE_PROFILER)|"
+        description: >
+          Skip rocSPARSE's legacy roctx64 link patch when the profiler stack is
+          disabled, avoiding the same missing-roctx64 configure failure later in
+          the math library build.
+
+      # 9. Disable RCCL ROCTX tracing when profiler stack is disabled
+      - type: sed
+        file: "comm-libs/CMakeLists.txt"
+        marker: "-DROCTX=OFF"
+        marker_absent: true
+        sed_command: '/-DENABLE_MSCCL_KERNEL=OFF/a\      -DROCTX=OFF'
+        description: >
+          Disable RCCL's optional ROCTX tracing integration. Upstream RCCL
+          enables ROCTX by default and later calls find_library(roctx64),
+          which fails under TheRock builds configured with
+          THEROCK_ENABLE_PROFILER=OFF because roctracer/roctx64 are not built.
+
+      # 10. Disable hipBLASLt ROCTX marker support when profiler stack is disabled
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DHIPBLASLT_ENABLE_MARKER=OFF"
+        marker_absent: true
+        sed_command: '/-DHIPBLASLT_ENABLE_THEROCK=ON/a\    -DHIPBLASLT_ENABLE_MARKER=OFF'
+        description: >
+          Disable hipBLASLt's optional ROCTX marker integration. hipBLASLt
+          enables markers by default when BUILD_SHARED_LIBS is on, and then
+          hard-fails if roctx64 is not present. That conflicts with
+          THEROCK_ENABLE_PROFILER=OFF, where roctracer/roctx64 are intentionally
+          not built.
+
+      # 11. Disable rocBLAS ROCTX integration when profiler stack is disabled
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DROCTX=OFF"
+        marker_absent: true
+        sed_command: '0,/-DLINK_BLIS=OFF/s//-DLINK_BLIS=OFF\
+    -DROCTX=OFF/'
+        description: >
+          Disable rocBLAS's optional ROCTX integration. rocBLAS later probes
+          for roctracer headers and roctx when this path is enabled, which
+          conflicts with THEROCK_ENABLE_PROFILER=OFF where those profiler
+          components are intentionally unavailable.
 
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python
