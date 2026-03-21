@@ -435,6 +435,17 @@ packages:
           THEROCK_ENABLE_PROFILER=OFF, where roctracer/roctx64 are intentionally
           not built.
 
+      - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DHIPSPARSELT_ENABLE_MARKER=OFF"
+        marker_absent: true
+        sed_command: '/-DHIPSPARSELT_ENABLE_THEROCK=ON/a\    -DHIPSPARSELT_ENABLE_MARKER=OFF'
+        description: >
+          Disable hipSPARSELt's optional ROCTX marker integration. hipSPARSELt
+          defaults HIPSPARSELT_ENABLE_MARKER to ON on non-Windows builds and
+          then hard-requires roctx64/roctracer during configure, which is
+          incompatible with THEROCK_ENABLE_PROFILER=OFF.
+
       # 11. Disable rocBLAS ROCTX integration when profiler stack is disabled
       - type: sed
         file: "math-libs/BLAS/CMakeLists.txt"

@@ -197,6 +197,21 @@ and hard-fails if roctracer is absent. That is incompatible with this build's
 **Fix**: Inject `-DHIPBLASLT_ENABLE_MARKER=OFF` into TheRock's hipBLASLt
 subproject cmake args so it skips the optional ROCTX marker path entirely.
 
+### 10f2. hipSPARSELt enables ROCTX markers by default
+
+**Symptom**: hipSPARSELt configure fails with:
+`Could not find ROCTX64_LIBRARY using the following names: roctx64, libroctx64`
+
+**Root cause**: hipSPARSELt's top-level cmake defines
+`HIPSPARSELT_ENABLE_MARKER` as ON by default on non-Windows builds. When that
+option is enabled, it unconditionally calls `find_library(ROCTX64_LIBRARY ...)`
+and `find_path(roctracer/roctx.h ...)`. That conflicts with this build's
+`THEROCK_ENABLE_PROFILER=OFF` configuration, where roctracer/roctx64 are
+intentionally absent.
+
+**Fix**: Inject `-DHIPSPARSELT_ENABLE_MARKER=OFF` into TheRock's hipSPARSELt
+subproject cmake args so configure skips the optional ROCTX marker path.
+
 ### 10g. rocprofiler-sdk yaml-cpp patch path moved in current TheRock layout
 
 **Symptom**: rocprofiler-sdk later fails compiling vendored yaml-cpp with
