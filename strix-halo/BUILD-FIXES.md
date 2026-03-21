@@ -230,6 +230,21 @@ when `ROCTX` is off so sources like `logging.cpp` do not include
 `<roctracer/roctx.h>` after the probe has been skipped.
 
 
+### 10h2. rocSPARSE still probes roctracer headers unless BUILD_WITH_ROCTX is turned off
+
+**Symptom**: rocSPARSE configure fails with:
+`Could not find super-project find_path(... roctracer/roctx.h ...)`
+
+**Root cause**: Unlike rocBLAS, rocSPARSE already has an upstream
+`if(BUILD_SHARED_LIBS AND BUILD_WITH_ROCTX)` guard around its ROCTX probing in
+`projects/rocsparse/library/CMakeLists.txt`. However, TheRock's
+`math-libs/BLAS/CMakeLists.txt` does not pass `-DBUILD_WITH_ROCTX=OFF` to the
+rocSPARSE subproject, so the guarded probe still stays enabled by default and
+hits the explicit super-project finder when profiler components are absent.
+
+**Fix**: Inject `-DBUILD_WITH_ROCTX=OFF` into TheRock's rocSPARSE subproject
+cmake args so rocSPARSE skips the optional roctx header/library probe entirely.
+
 ### 10i. ROCR-Runtime OpenCL blit kernels do not know the device-lib path while bootstrapping
 
 **Symptom**: TheRock build fails in `rocm-systems/projects/rocr-runtime` while

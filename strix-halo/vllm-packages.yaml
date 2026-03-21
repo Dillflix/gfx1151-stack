@@ -449,6 +449,19 @@ packages:
           components are intentionally unavailable.
 
       - type: sed
+        file: "math-libs/BLAS/CMakeLists.txt"
+        marker: "-DBUILD_WITH_ROCTX=OFF"
+        marker_absent: true
+        sed_command: '0,/-DBUILD_CLIENTS_SAMPLES=OFF/s//-DBUILD_CLIENTS_SAMPLES=OFF\
+    -DBUILD_WITH_ROCTX=OFF/'
+        description: >
+          Disable rocSPARSE's optional ROCTX tracing path at the TheRock
+          subproject layer. rocSPARSE already guards its roctx header/library
+          probing with BUILD_WITH_ROCTX, but TheRock does not currently pass
+          that option, so profiler-disabled builds still fail in the explicit
+          find_path/find_library override.
+
+      - type: sed
         file: "rocm-libraries/projects/rocblas/library/CMakeLists.txt"
         marker: "if(BUILD_SHARED_LIBS)"
         sed_command: 's|if(BUILD_SHARED_LIBS)|if(BUILD_SHARED_LIBS AND ROCTX)|'
