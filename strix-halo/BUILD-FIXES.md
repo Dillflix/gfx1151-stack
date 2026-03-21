@@ -223,6 +223,26 @@ intentionally not built.
 **Fix**: Inject `-DROCTX=OFF` into TheRock's rocBLAS subproject cmake args so
 rocBLAS skips the optional ROCTX path entirely.
 
+
+### 10i. ROCR-Runtime OpenCL blit kernels do not know the device-lib path while bootstrapping
+
+**Symptom**: TheRock build fails in `rocm-systems/projects/rocr-runtime` while
+building `opencl_blit_objects` with a command like:
+`clang -O2 -x cl ... imageblit_kernels.cl`
+followed by:
+`cannot find ROCm device library; provide its path via '--rocm-path' or '--rocm-device-lib-path'`
+
+**Root cause**: `runtime/hsa-runtime/image/blit_src/CMakeLists.txt` hard-codes
+a `clang -x cl` custom command for the OpenCL blit kernels, but it does not
+pass any ROCm install root or device-library path. During a TheRock bootstrap
+build, clang cannot infer the just-built `amdgcn/bitcode` directory on its own,
+so current clang releases abort instead of compiling the embedded blit objects.
+
+**Fix**: Patch `rocm-systems/projects/rocr-runtime/runtime/hsa-runtime/image/blit_src/CMakeLists.txt`
+to detect `${CMAKE_PREFIX_PATH}/llvm/amdgcn/bitcode` or
+`${CMAKE_PREFIX_PATH}/amdgcn/bitcode` and append
+`--rocm-device-lib-path=<detected path>` to the generated `clang -x cl` command.
+
 ### 25b. YAML patchelf RPATH expansion treated `$ORIGIN` as a shell variable
 
 **Symptom**: `build-vllm.sh` aborts while applying `patchelf_rpath` patches
