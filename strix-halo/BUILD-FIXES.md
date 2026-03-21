@@ -214,14 +214,18 @@ so the existing `<cstdint>` insertion applies to the actual vendored file.
 
 **Symptom**: rocBLAS configure fails with:
 `Could not find super-project find_path(... roctracer/roctx.h ...)`
+even though TheRock already passes `-DROCTX=OFF` to the rocBLAS subproject.
 
-**Root cause**: rocBLAS enables an optional ROCTX integration path and later
-looks for `roctracer/roctx.h`. That is incompatible with this build's
-`THEROCK_ENABLE_PROFILER=OFF` configuration, where roctracer/roctx are
-intentionally not built.
+**Root cause**: rocBLAS's `projects/rocblas/library/CMakeLists.txt` gates the
+ROCTX probe only on `BUILD_SHARED_LIBS`. Its `find_path(roctracer/roctx.h)` and
+`find_library(roctx64)` block does not honor the `ROCTX` cache option, so the
+header/library probe still runs in shared-library builds even when profiling is
+explicitly disabled.
 
-**Fix**: Inject `-DROCTX=OFF` into TheRock's rocBLAS subproject cmake args so
-rocBLAS skips the optional ROCTX path entirely.
+**Fix**: Keep injecting `-DROCTX=OFF` from TheRock's `math-libs/BLAS/CMakeLists.txt`,
+and also patch `rocm-libraries/projects/rocblas/library/CMakeLists.txt` so the
+ROCTX probe is guarded by `if(BUILD_SHARED_LIBS AND ROCTX)` instead of only
+`if(BUILD_SHARED_LIBS)`.
 
 
 ### 10i. ROCR-Runtime OpenCL blit kernels do not know the device-lib path while bootstrapping

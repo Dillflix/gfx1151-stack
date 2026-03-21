@@ -448,6 +448,17 @@ packages:
           conflicts with THEROCK_ENABLE_PROFILER=OFF where those profiler
           components are intentionally unavailable.
 
+      - type: sed
+        file: "rocm-libraries/projects/rocblas/library/CMakeLists.txt"
+        marker: "if(BUILD_SHARED_LIBS)"
+        sed_command: 's|if(BUILD_SHARED_LIBS)|if(BUILD_SHARED_LIBS AND ROCTX)|'
+        description: >
+          Gate rocBLAS's shared-library ROCTX header/library probing on the
+          ROCTX cache option as well. Upstream currently probes roctracer/roctx.h
+          whenever BUILD_SHARED_LIBS is on, so TheRock still fails in
+          projects/rocblas/library/CMakeLists.txt even when -DROCTX=OFF was
+          injected at the super-project layer.
+
   # ---------------------------------------------------------------------------
   # Phase B: CPU Libraries + Python
   # ---------------------------------------------------------------------------
