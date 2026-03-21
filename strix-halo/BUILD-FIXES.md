@@ -223,6 +223,21 @@ intentionally not built.
 **Fix**: Inject `-DROCTX=OFF` into TheRock's rocBLAS subproject cmake args so
 rocBLAS skips the optional ROCTX path entirely.
 
+### 25b. YAML patchelf RPATH expansion treated `$ORIGIN` as a shell variable
+
+**Symptom**: `build-vllm.sh` aborts while applying `patchelf_rpath` patches
+with:
+`./build-vllm.sh: line 754: ORIGIN: unbound variable`
+
+**Root cause**: The YAML-driven patch helper expanded RPATH templates with
+`eval echo`. That works for `${LOCAL_PREFIX}` but also tries to expand ELF
+loader tokens like `$ORIGIN` as shell variables, which fails under
+`set -u`.
+
+**Fix**: Escape `$ORIGIN` before running `eval echo` so shell variable
+expansion still resolves our repo variables while preserving the literal ELF
+RPATH token for `patchelf`.
+
 ## AOCL-LibM (Phase B, Step 6)
 
 ### 11. -muse-unaligned-vector-move (AOCC-only flag)

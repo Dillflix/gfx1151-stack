@@ -749,8 +749,10 @@ apply_patches() {
                 p_rpath="$(ycfg ".packages.${pkg_key}.patches[${i}].rpath")"
                 p_action="$(ycfg ".packages.${pkg_key}.patches[${i}].action")"
 
-                # Expand shell variables
+                # Expand shell variables. Preserve literal ELF loader tokens like
+                # $ORIGIN so set -u does not treat them as shell variables.
                 p_target="$(eval echo "${p_target}")"
+                p_rpath="${p_rpath//\$ORIGIN/\\\$ORIGIN}"
                 p_rpath="$(eval echo "${p_rpath}")"
 
                 info "  [${i}] ${p_description}"
