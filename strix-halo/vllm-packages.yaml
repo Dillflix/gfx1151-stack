@@ -500,6 +500,17 @@ packages:
           then hard-requires roctx64/roctracer during configure, which is
           incompatible with THEROCK_ENABLE_PROFILER=OFF.
 
+      - type: sed
+        file: "ml-libs/CMakeLists.txt"
+        marker: "-DMIOPEN_USE_ROCTRACER=OFF"
+        marker_absent: true
+        sed_command: '/-DMIOPEN_USE_COMPOSABLEKERNEL=/a\      -DMIOPEN_USE_ROCTRACER=OFF'
+        description: >
+          Disable MIOpen's optional rocTracer/ROCTX integration. MIOpen
+          enables MIOPEN_USE_ROCTRACER by default and then probes for
+          roctracer/roctx.h and roctx64 during configure, which fails when
+          THEROCK_ENABLE_PROFILER=OFF intentionally omits the profiler stack.
+
       # 11. Disable rocBLAS ROCTX integration when profiler stack is disabled
       - type: sed
         file: "math-libs/BLAS/CMakeLists.txt"

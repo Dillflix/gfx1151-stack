@@ -247,6 +247,20 @@ intentionally absent.
 **Fix**: Inject `-DHIPSPARSELT_ENABLE_MARKER=OFF` into TheRock's hipSPARSELt
 subproject cmake args so configure skips the optional ROCTX marker path.
 
+### 10f3. MIOpen still probes roctracer headers when profiler is disabled
+
+**Symptom**: MIOpen configure fails with:
+`Could not find super-project find_path(NAMES roctracer/roctx.h)`
+
+**Root cause**: MIOpen's top-level `CMakeLists.txt` sets
+`MIOPEN_USE_ROCTRACER` to `ON` by default. On non-Windows builds that makes
+configure call `find_path(roctracer/roctx.h)` and `find_library(roctx64)`,
+which conflicts with this build's `THEROCK_ENABLE_PROFILER=OFF`
+configuration where roctracer/roctx64 are intentionally absent.
+
+**Fix**: Inject `-DMIOPEN_USE_ROCTRACER=OFF` into TheRock's MIOpen subproject
+cmake args so the optional rocTracer/ROCTX probe is skipped entirely.
+
 ### 10g. rocprofiler-sdk yaml-cpp patch path moved in current TheRock layout
 
 **Symptom**: rocprofiler-sdk later fails compiling vendored yaml-cpp with
