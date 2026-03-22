@@ -184,7 +184,42 @@ the profiler stack and `roctx64` are intentionally unavailable.
 **Fix**: Inject `-DROCTX=OFF` into TheRock's RCCL subproject cmake args so
 RCCL skips its optional ROCTX tracing path entirely.
 
-### 10f. hipBLASLt enables ROCTX markers by default
+### 10f. RCCL rccl_common.h misses tuner macro definitions
+
+**Symptom**: RCCL's `rccl_wrap.cc` fails during the TheRock build with:
+`use of undeclared identifier 'NCCL_NUM_ALGORITHMS'` and
+`use of undeclared identifier 'NCCL_NUM_PROTOCOLS'`
+
+**Root cause**: Newer RCCL snapshots moved `NCCL_NUM_ALGORITHMS` and
+`NCCL_NUM_PROTOCOLS` into `src/include/plugin/nccl_tuner.h`, but
+`src/include/rccl_common.h` still references them after including only
+`nccl_common.h`, `nccl.h`, `param.h`, and `core.h`. In the generated hipify
+header tree that leaves the tuner macros undefined when `rccl_wrap.cc`
+compiles.
+
+**Fix**: Inject `#include "plugin/nccl_tuner.h"` into `rocm-systems/projects/rccl/src/include/rccl_common.h` so the
+internal tuner macro definitions are available before the RCCL addon algorithm
+and protocol declarations.
+
+### 10g. RCCL nvtx.h ignores NVTX stub mode for direct includes
+
+**Symptom**: RCCL's `group.cc` fails during the TheRock build with macro
+redefinition warnings followed by `redefinition of 'nccl_domain'` between
+`nvtx.h` and `nvtx_stub.h`.
+
+**Root cause**: TheRock already passes `-DNVTX_NO_IMPL`, and RCCL's `core.h`
+properly switches to `nvtx_stub.h` in that mode. However, some RCCL sources
+include `nvtx.h` directly, and `nvtx.h` itself does not currently honor
+`NVTX_NO_IMPL`, so both the real NVTX declarations and the stub declarations
+end up active in the same translation unit.
+
+**Fix**: Wrap `rocm-systems/projects/rccl/src/include/nvtx.h` itself in an
+`#ifdef NVTX_NO_IMPL` guard that includes `nvtx_stub.h`, and extend
+`rocm-systems/projects/rccl/src/include/nvtx_stub.h` with a no-op
+`NCCL_NVTX3_FUNC_RANGE` definition so sources using the common NVTX macro
+surface still compile in stub mode.
+
+### 10h. hipBLASLt enables ROCTX markers by default
 
 **Symptom**: hipBLASLt configure fails with:
 `Could not find super-project find_library(NAMES roctx64)`
@@ -211,6 +246,20 @@ intentionally absent.
 
 **Fix**: Inject `-DHIPSPARSELT_ENABLE_MARKER=OFF` into TheRock's hipSPARSELt
 subproject cmake args so configure skips the optional ROCTX marker path.
+
+### 10f3. MIOpen still probes roctracer headers when profiler is disabled
+
+**Symptom**: MIOpen configure fails with:
+`Could not find super-project find_path(NAMES roctracer/roctx.h)`
+
+**Root cause**: MIOpen's top-level `CMakeLists.txt` sets
+`MIOPEN_USE_ROCTRACER` to `ON` by default. On non-Windows builds that makes
+configure call `find_path(roctracer/roctx.h)` and `find_library(roctx64)`,
+which conflicts with this build's `THEROCK_ENABLE_PROFILER=OFF`
+configuration where roctracer/roctx64 are intentionally absent.
+
+**Fix**: Inject `-DMIOPEN_USE_ROCTRACER=OFF` into TheRock's MIOpen subproject
+cmake args so the optional rocTracer/ROCTX probe is skipped entirely.
 
 ### 10g. rocprofiler-sdk yaml-cpp patch path moved in current TheRock layout
 
