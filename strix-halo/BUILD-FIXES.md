@@ -213,8 +213,11 @@ include `nvtx.h` directly, and `nvtx.h` itself does not currently honor
 `NVTX_NO_IMPL`, so both the real NVTX declarations and the stub declarations
 end up active in the same translation unit.
 
-**Fix**: Wrap `rocm-systems/projects/rccl/src/include/nvtx.h` itself in an `#ifdef NVTX_NO_IMPL` guard that includes
-`nvtx_stub.h` and skips the real NVTX declarations when stub mode is enabled.
+**Fix**: Wrap `rocm-systems/projects/rccl/src/include/nvtx.h` itself in an
+`#ifdef NVTX_NO_IMPL` guard that includes `nvtx_stub.h`, and extend
+`rocm-systems/projects/rccl/src/include/nvtx_stub.h` with a no-op
+`NCCL_NVTX3_FUNC_RANGE` definition so sources using the common NVTX macro
+surface still compile in stub mode.
 
 ### 10h. hipBLASLt enables ROCTX markers by default
 

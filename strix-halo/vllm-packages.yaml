@@ -428,8 +428,8 @@ packages:
         marker: '#include "plugin/nccl_tuner.h"'
         marker_absent: true
         sed_command: |-
-          0,/#include "nccl.h"/s//#include "nccl.h"\
-          #include "plugin\/nccl_tuner.h"/
+          /#include "nccl.h"/a\
+          #include "plugin\/nccl_tuner.h"
         description: >
           Ensure RCCL's internal tuner macros are visible before rccl_common.h
           references NCCL_NUM_ALGORITHMS and NCCL_NUM_PROTOCOLS. The current
@@ -463,6 +463,18 @@ packages:
         description: >
           Close the NVTX_NO_IMPL guard added to RCCL's nvtx.h so profiler-
           disabled builds consistently use the stub header path.
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/nvtx_stub.h"
+        marker: '#define NCCL_NVTX3_FUNC_RANGE'
+        marker_absent: true
+        sed_command: |-
+          /#define NVTX3_RANGE_ADD_PAYLOAD(N, S, P)/a\
+          #define NCCL_NVTX3_FUNC_RANGE
+        description: >
+          Extend RCCL's NVTX stub header with a no-op NCCL_NVTX3_FUNC_RANGE
+          definition. Several sources use that macro through core.h, so once
+          nvtx.h honors NVTX_NO_IMPL the stub path must also provide the same
+          API surface.
 
       # 10. Disable hipBLASLt ROCTX marker support when profiler stack is disabled
       - type: sed
