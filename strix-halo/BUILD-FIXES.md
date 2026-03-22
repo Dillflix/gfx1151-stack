@@ -197,7 +197,7 @@ RCCL skips its optional ROCTX tracing path entirely.
 header tree that leaves the tuner macros undefined when `rccl_wrap.cc`
 compiles.
 
-**Fix**: Inject `#include "plugin/nccl_tuner.h"` into `rccl_common.h` so the
+**Fix**: Inject `#include "plugin/nccl_tuner.h"` into `rocm-systems/projects/rccl/src/include/rccl_common.h` so the
 internal tuner macro definitions are available before the RCCL addon algorithm
 and protocol declarations.
 
@@ -213,7 +213,7 @@ include `nvtx.h` directly, and `nvtx.h` itself does not currently honor
 `NVTX_NO_IMPL`, so both the real NVTX declarations and the stub declarations
 end up active in the same translation unit.
 
-**Fix**: Wrap `nvtx.h` itself in an `#ifdef NVTX_NO_IMPL` guard that includes
+**Fix**: Wrap `rocm-systems/projects/rccl/src/include/nvtx.h` itself in an `#ifdef NVTX_NO_IMPL` guard that includes
 `nvtx_stub.h` and skips the real NVTX declarations when stub mode is enabled.
 
 ### 10h. hipBLASLt enables ROCTX markers by default

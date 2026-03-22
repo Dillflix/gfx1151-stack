@@ -424,7 +424,7 @@ packages:
 
       # 9b. Restore RCCL tuner macro definitions before rccl_common.h uses them
       - type: sed
-        file: "rocm-libraries/projects/rccl/src/include/rccl_common.h"
+        file: "rocm-systems/projects/rccl/src/include/rccl_common.h"
         marker: '#include "plugin/nccl_tuner.h"'
         marker_absent: true
         sed_command: '0,/#include "nccl.h"/s//#include "nccl.h"
@@ -438,7 +438,7 @@ packages:
 
       # 9c. Make RCCL's NVTX header honor the stub-only build configuration
       - type: sed
-        file: "rocm-libraries/projects/rccl/src/include/nvtx.h"
+        file: "rocm-systems/projects/rccl/src/include/nvtx.h"
         marker: '#ifdef NVTX_NO_IMPL'
         marker_absent: true
         sed_command: '0,/^#define NCCL_NVTX_H_$/s//#define NCCL_NVTX_H_
@@ -453,7 +453,7 @@ packages:
           stub declarations are both compiled, causing nccl_domain and macro
           redefinition errors.
       - type: sed
-        file: "rocm-libraries/projects/rccl/src/include/nvtx.h"
+        file: "rocm-systems/projects/rccl/src/include/nvtx.h"
         marker: '#endif // NVTX_NO_IMPL'
         marker_absent: true
         sed_command: '$s/$/
