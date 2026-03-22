@@ -422,6 +422,60 @@ packages:
           which fails under TheRock builds configured with
           THEROCK_ENABLE_PROFILER=OFF because roctracer/roctx64 are not built.
 
+      # 9b. Restore RCCL tuner macro definitions before rccl_common.h uses them
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/rccl_common.h"
+        marker: '#include "plugin/nccl_tuner.h"'
+        marker_absent: true
+        sed_command: |-
+          /#include "nccl.h"/a\
+          #include "plugin\/nccl_tuner.h"
+        description: >
+          Ensure RCCL's internal tuner macros are visible before rccl_common.h
+          references NCCL_NUM_ALGORITHMS and NCCL_NUM_PROTOCOLS. The current
+          RCCL snapshot defines those macros in plugin/nccl_tuner.h, so newer
+          rccl_common.h revisions fail to compile if that header is not pulled
+          in explicitly.
+
+      # 9c. Make RCCL's NVTX header honor the stub-only build configuration
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/nvtx.h"
+        marker: '#ifdef NVTX_NO_IMPL'
+        marker_absent: true
+        sed_command: |-
+          /^#define NCCL_NVTX_H_$/a\
+          #ifdef NVTX_NO_IMPL\
+          #include "nvtx_stub.h"\
+          #else
+        description: >
+          Make RCCL's nvtx.h defer to nvtx_stub.h when TheRock passes
+          -DNVTX_NO_IMPL. Some sources include nvtx.h directly instead of going
+          through core.h, so without this guard the real NVTX declarations and
+          stub declarations are both compiled, causing nccl_domain and macro
+          redefinition errors.
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/nvtx.h"
+        marker: '#endif // NVTX_NO_IMPL'
+        marker_absent: true
+        sed_command: |-
+          $i\
+          #endif // NVTX_NO_IMPL
+        description: >
+          Close the NVTX_NO_IMPL guard added to RCCL's nvtx.h so profiler-
+          disabled builds consistently use the stub header path.
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/nvtx_stub.h"
+        marker: '#define NCCL_NVTX3_FUNC_RANGE'
+        marker_absent: true
+        sed_command: |-
+          /#define NVTX3_RANGE_ADD_PAYLOAD(N, S, P)/a\
+          #define NCCL_NVTX3_FUNC_RANGE
+        description: >
+          Extend RCCL's NVTX stub header with a no-op NCCL_NVTX3_FUNC_RANGE
+          definition. Several sources use that macro through core.h, so once
+          nvtx.h honors NVTX_NO_IMPL the stub path must also provide the same
+          API surface.
+
       # 10. Disable hipBLASLt ROCTX marker support when profiler stack is disabled
       - type: sed
         file: "math-libs/BLAS/CMakeLists.txt"
