@@ -427,8 +427,9 @@ packages:
         file: "rocm-systems/projects/rccl/src/include/rccl_common.h"
         marker: '#include "plugin/nccl_tuner.h"'
         marker_absent: true
-        sed_command: '0,/#include "nccl.h"/s//#include "nccl.h"
-#include "plugin\/nccl_tuner.h"/'
+        sed_command: |-
+          0,/#include "nccl.h"/s//#include "nccl.h"\
+          #include "plugin\/nccl_tuner.h"/
         description: >
           Ensure RCCL's internal tuner macros are visible before rccl_common.h
           references NCCL_NUM_ALGORITHMS and NCCL_NUM_PROTOCOLS. The current
@@ -441,11 +442,11 @@ packages:
         file: "rocm-systems/projects/rccl/src/include/nvtx.h"
         marker: '#ifdef NVTX_NO_IMPL'
         marker_absent: true
-        sed_command: '0,/^#define NCCL_NVTX_H_$/s//#define NCCL_NVTX_H_
-
-#ifdef NVTX_NO_IMPL
-#include "nvtx_stub.h"
-#else/'
+        sed_command: |-
+          /^#define NCCL_NVTX_H_$/a\
+          #ifdef NVTX_NO_IMPL\
+          #include "nvtx_stub.h"\
+          #else
         description: >
           Make RCCL's nvtx.h defer to nvtx_stub.h when TheRock passes
           -DNVTX_NO_IMPL. Some sources include nvtx.h directly instead of going
@@ -456,8 +457,9 @@ packages:
         file: "rocm-systems/projects/rccl/src/include/nvtx.h"
         marker: '#endif // NVTX_NO_IMPL'
         marker_absent: true
-        sed_command: '$s/$/
-#endif \/\/ NVTX_NO_IMPL/'
+        sed_command: |-
+          $i\
+          #endif // NVTX_NO_IMPL
         description: >
           Close the NVTX_NO_IMPL guard added to RCCL's nvtx.h so profiler-
           disabled builds consistently use the stub header path.
