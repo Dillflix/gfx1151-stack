@@ -157,12 +157,55 @@ diagnose_pytorch_import_failure() {
 
     if grep -q 'libtorch_hip.so: undefined symbol: _ZN2at4cuda4blas4gemm' "${_log_file}"; then
         warn "Detected libtorch_hip.so unresolved at::cuda::blas::gemm symbol."
-        warn "This matches the known HIP ABI mismatch caused by -fclang-abi-compat=17."
-        warn "PyTorch wheel patching is NOT a verified fix for this failure."
-        warn "Check that cmake/Dependencies.cmake no longer contains -fclang-abi-compat=17 and rebuild from a clean PyTorch build tree."
+        warn "This is an unresolved PyTorch ROCm import failure. No verified automatic fix is known in this script."
+        warn "Environment: LD_PRELOAD=${LD_PRELOAD:-<unset>}"
+        warn "Environment: LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"
         if [[ -f "${PYTORCH_SRC}/cmake/Dependencies.cmake" ]]; then
-            warn "Relevant lines from ${PYTORCH_SRC}/cmake/Dependencies.cmake:"
-            grep -n 'fclang-abi-compat\|HIP_HIPCC_FLAGS' "${PYTORCH_SRC}/cmake/Dependencies.cmake" | tail -n 10 || true
+            if grep -q -- '-fclang-abi-compat=17' "${PYTORCH_SRC}/cmake/Dependencies.cmake"; then
+                warn "Potential cause: cmake/Dependencies.cmake still contains -fclang-abi-compat=17."
+            else
+                warn "Checked ${PYTORCH_SRC}/cmake/Dependencies.cmake: -fclang-abi-compat=17 is NOT present."
+            fi
+        fi
+
+        local _hip_path _torch_lib_dir _torch_root _c_ext _ld_debug_log _saved_ld_debug_log
+        _hip_path="$(grep -o '/[^ :]*libtorch_hip\.so' "${_log_file}" | head -n 1 || true)"
+        if [[ -n "${_hip_path}" && -f "${_hip_path}" ]]; then
+            _torch_lib_dir="$(dirname "${_hip_path}")"
+            _torch_root="$(dirname "${_torch_lib_dir}")"
+            _c_ext="$(find "${_torch_root}" -maxdepth 1 -name '_C*.so' | head -n 1 || true)"
+            warn "libtorch_hip.so dynamic section:"
+            readelf -d "${_hip_path}" | grep 'NEEDED\|RPATH\|RUNPATH' || true
+            if command -v ldd >/dev/null 2>&1; then
+                warn "ldd for libtorch_hip.so:"
+                ldd "${_hip_path}" || true
+                if [[ -n "${_c_ext}" && -f "${_c_ext}" ]]; then
+                    warn "ldd for $(basename "${_c_ext}"):"
+                    ldd "${_c_ext}" || true
+                fi
+            fi
+            if command -v nm >/dev/null 2>&1; then
+                warn "Searching installed torch shared libraries for the missing gemm symbol definition..."
+                find "${_torch_root}" -maxdepth 2 -name '*.so' -print0 | while IFS= read -r -d '' _lib; do
+                    if nm -D --defined-only "${_lib}" 2>/dev/null | grep -q '_ZN2at4cuda4blas4gemm'; then
+                        warn "  provider candidate: ${_lib}"
+                    fi
+                done
+            fi
+
+            _ld_debug_log="$(mktemp)"
+            if LD_DEBUG=libs,symbols python -c 'import torch' > /dev/null 2>"${_ld_debug_log}"; then
+                warn "LD_DEBUG import unexpectedly succeeded during diagnostics."
+            else
+                warn "Captured loader trace for failing import."
+                grep -E 'libtorch_hip|_ZN2at4cuda4blas4gemm|symbol lookup error|calling init|find library=' "${_ld_debug_log}" | tail -n 200 || true
+                if [[ -n "${VLLM_DIR:-}" && -d "${VLLM_DIR}" ]]; then
+                    _saved_ld_debug_log="${VLLM_DIR}/torch-import-ld-debug.log"
+                    cp "${_ld_debug_log}" "${_saved_ld_debug_log}"
+                    warn "Full LD_DEBUG trace saved to ${_saved_ld_debug_log}"
+                fi
+            fi
+            rm -f "${_ld_debug_log}"
         fi
     fi
 }
