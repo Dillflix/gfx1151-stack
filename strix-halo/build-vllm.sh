@@ -134,6 +134,82 @@ detect_distro() {
 
 detect_distro
 
+configure_openmp_runtime_env() {
+    local _runtime_root="${1:-${ROCM_PATH:-${LOCAL_PREFIX:-}}}"
+    local _candidate
+    for _candidate in \
+        "${_runtime_root}/lib/llvm/lib/libomp.so" \
+        "${_runtime_root}/lib/llvm/lib/libiomp5.so" \
+        "${_runtime_root}/lib/libomp.so" \
+        "${_runtime_root}/lib/libiomp5.so"; do
+        [[ -f "${_candidate}" ]] || continue
+        case ":${LD_PRELOAD:-}:" in
+            *:"${_candidate}":*) return 0 ;;
+        esac
+        export LD_PRELOAD="${_candidate}${LD_PRELOAD:+:${LD_PRELOAD}}"
+        return 0
+    done
+}
+
+diagnose_pytorch_import_failure() {
+    local _log_file="${1}"
+    [[ -f "${_log_file}" ]] || return 0
+
+    if grep -q 'libtorch_hip.so: undefined symbol: _ZN2at4cuda4blas4gemm' "${_log_file}"; then
+        warn "Detected libtorch_hip.so unresolved at::cuda::blas::gemm symbol."
+        warn "This is an unresolved PyTorch ROCm import failure. No verified automatic fix is known in this script."
+        warn "Environment: LD_PRELOAD=${LD_PRELOAD:-<unset>}"
+        warn "Environment: LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"
+        if [[ -f "${PYTORCH_SRC}/cmake/Dependencies.cmake" ]]; then
+            if grep -q -- '-fclang-abi-compat=17' "${PYTORCH_SRC}/cmake/Dependencies.cmake"; then
+                warn "Potential cause: cmake/Dependencies.cmake still contains -fclang-abi-compat=17."
+            else
+                warn "Checked ${PYTORCH_SRC}/cmake/Dependencies.cmake: -fclang-abi-compat=17 is NOT present."
+            fi
+        fi
+
+        local _hip_path _torch_lib_dir _torch_root _c_ext _ld_debug_log _saved_ld_debug_log
+        _hip_path="$(grep -o '/[^ :]*libtorch_hip\.so' "${_log_file}" | head -n 1 || true)"
+        if [[ -n "${_hip_path}" && -f "${_hip_path}" ]]; then
+            _torch_lib_dir="$(dirname "${_hip_path}")"
+            _torch_root="$(dirname "${_torch_lib_dir}")"
+            _c_ext="$(find "${_torch_root}" -maxdepth 1 -name '_C*.so' | head -n 1 || true)"
+            warn "libtorch_hip.so dynamic section:"
+            readelf -d "${_hip_path}" | grep 'NEEDED\|RPATH\|RUNPATH' || true
+            if command -v ldd >/dev/null 2>&1; then
+                warn "ldd for libtorch_hip.so:"
+                ldd "${_hip_path}" || true
+                if [[ -n "${_c_ext}" && -f "${_c_ext}" ]]; then
+                    warn "ldd for $(basename "${_c_ext}"):"
+                    ldd "${_c_ext}" || true
+                fi
+            fi
+            if command -v nm >/dev/null 2>&1; then
+                warn "Searching installed torch shared libraries for the missing gemm symbol definition..."
+                find "${_torch_root}" -maxdepth 2 -name '*.so' -print0 | while IFS= read -r -d '' _lib; do
+                    if nm -D --defined-only "${_lib}" 2>/dev/null | grep -q '_ZN2at4cuda4blas4gemm'; then
+                        warn "  provider candidate: ${_lib}"
+                    fi
+                done
+            fi
+
+            _ld_debug_log="$(mktemp)"
+            if LD_DEBUG=libs,symbols python -c 'import torch' > /dev/null 2>"${_ld_debug_log}"; then
+                warn "LD_DEBUG import unexpectedly succeeded during diagnostics."
+            else
+                warn "Captured loader trace for failing import."
+                grep -E 'libtorch_hip|_ZN2at4cuda4blas4gemm|symbol lookup error|calling init|find library=' "${_ld_debug_log}" | tail -n 200 || true
+                if [[ -n "${VLLM_DIR:-}" && -d "${VLLM_DIR}" ]]; then
+                    _saved_ld_debug_log="${VLLM_DIR}/torch-import-ld-debug.log"
+                    cp "${_ld_debug_log}" "${_saved_ld_debug_log}"
+                    warn "Full LD_DEBUG trace saved to ${_saved_ld_debug_log}"
+                fi
+            fi
+            rm -f "${_ld_debug_log}"
+        fi
+    fi
+}
+
 # =============================================================================
 # YAML Manifest Helpers
 # =============================================================================
@@ -1227,6 +1303,7 @@ create_managed_venv() {
 
     if [[ -d "${LOCAL_PREFIX}/lib" ]]; then
         export LD_LIBRARY_PATH="${LOCAL_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        configure_openmp_runtime_env "${LOCAL_PREFIX}"
     fi
 
     if [[ "${install_deps}" == "yes" ]]; then
@@ -1375,6 +1452,7 @@ validate_rocm() {
     export ROCM_PATH="${LOCAL_PREFIX}"
     export LD_LIBRARY_PATH="${ROCM_PATH}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     export PATH="${ROCM_PATH}/lib/llvm/bin:${ROCM_PATH}/bin:${PATH}"
+    configure_openmp_runtime_env "${ROCM_PATH}"
 
     # Create clang/clang++ symlinks to amdclang/amdclang++ so that build
     # systems looking for "clang" on PATH find the AMD-optimized variant.
@@ -1489,6 +1567,10 @@ build_pytorch() {
     # patchelf patches are skipped here (applied to unpacked wheel below).
     apply_patches pytorch "${PYTORCH_SRC}"
 
+    if grep -q -- '-fclang-abi-compat=17' "${PYTORCH_SRC}/cmake/Dependencies.cmake"; then
+        die "PyTorch ABI patch failed: cmake/Dependencies.cmake still contains -fclang-abi-compat=17"
+    fi
+
     # HIPGraph.hip: file_rewrite (too complex for YAML, handled inline)
     local _hipgraph="${PYTORCH_SRC}/aten/src/ATen/hip/HIPGraph.hip"
     if [[ -f "${_hipgraph}" ]] && grep -q 'cudaGraphConditionalHandle' "${_hipgraph}"; then
@@ -1511,6 +1593,10 @@ HIPEOF
 
     # Step 1: Build the wheel. pip wheel runs cmake (incremental if build/
     # exists) and packages everything into a .whl file.
+    if [[ -d "${PYTORCH_SRC}/build" ]]; then
+        info "Removing stale PyTorch build tree to avoid reusing objects with old HIP ABI flags..."
+        rm -rf "${PYTORCH_SRC}/build"
+    fi
     info "Building PyTorch wheel (this takes 1-2 hours on first build)..."
     mkdir -p "${WHEELS_DIR}"
     pip wheel . \
@@ -1610,6 +1696,9 @@ with zipfile.ZipFile('${_torch_wheel}', 'w', zipfile.ZIP_DEFLATED) as zf:
 validate_pytorch() {
     log_step 12 "Validate PyTorch GPU access"
 
+    local _torch_validate_log
+    _torch_validate_log="$(mktemp)"
+
     python -c "
 import torch
 print(f'  PyTorch version: {torch.__version__}')
@@ -1620,7 +1709,15 @@ if torch.cuda.is_available():
     print(f'  Device count: {torch.cuda.device_count()}')
 else:
     raise RuntimeError('PyTorch cannot see GPU — build may have failed')
-" || die "PyTorch GPU validation failed"
+" >"${_torch_validate_log}" 2>&1 || {
+        cat "${_torch_validate_log}" >&2
+        diagnose_pytorch_import_failure "${_torch_validate_log}"
+        rm -f "${_torch_validate_log}"
+        die "PyTorch GPU validation failed"
+    }
+
+    cat "${_torch_validate_log}"
+    rm -f "${_torch_validate_log}"
 
     success "PyTorch GPU access verified"
 }
@@ -4652,6 +4749,7 @@ main() {
         export ROCM_PATH="${LOCAL_PREFIX}"
         export LD_LIBRARY_PATH="${LOCAL_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
         export PATH="${LOCAL_PREFIX}/lib/llvm/bin:${LOCAL_PREFIX}/bin:${PATH}"
+        configure_openmp_runtime_env "${LOCAL_PREFIX}"
         if [[ -d "${LOCAL_PREFIX}/llvm/amdgcn/bitcode" ]]; then
             export DEVICE_LIB_PATH="${LOCAL_PREFIX}/llvm/amdgcn/bitcode"
             export HIP_DEVICE_LIB_PATH="${LOCAL_PREFIX}/llvm/amdgcn/bitcode"
