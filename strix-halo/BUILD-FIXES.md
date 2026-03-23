@@ -435,7 +435,10 @@ mangled differently between `libtorch_cpu.so` and `libtorch_hip.so`).
 mangling rules". This forces HIP device code to use Clang 17 ABI while host
 code uses amdclang 22 ABI, causing name mangling mismatches.
 
-**Fix**: Remove the `-fclang-abi-compat=17` line from `Dependencies.cmake`.
+**Fix**: Remove the `-fclang-abi-compat=17` token from `Dependencies.cmake`
+and rebuild PyTorch from a clean `build/` directory. Incremental rebuilds can
+reuse objects compiled with the old HIP ABI flag and keep the mismatch alive
+even after the source patch is present.
 
 ### 19. Missing librocm_smi64.so linkage (upstream bug)
 
@@ -562,6 +565,30 @@ check when loaded with numpy >= 2.0.
 
 **Fix**: Patch `torch/csrc/utils/numpy_stub.h` to set `NPY_TARGET_VERSION`
 before including `<numpy/arrayobject.h>`:
+
+### 25d. Missing OpenMP runtime linkage in libtorch_cpu.so
+
+**Symptom**: `import torch` fails immediately with:
+
+```text
+ImportError: .../torch/lib/libtorch_cpu.so: undefined symbol: __kmpc_fork_call
+```
+
+**Root cause**: PyTorch was built with clang/amdclang OpenMP enabled, so
+`libtorch_cpu.so` references the `__kmpc_*` entry points provided by LLVM's
+OpenMP runtime (`libomp.so` / `libiomp5.so`). In some builds the packaged wheel
+omits that runtime from `libtorch_cpu.so`'s `NEEDED` list, so the dynamic
+linker never loads it during `import torch`.
+
+**Fix**: Do **not** rewrite PyTorch's internal ELF dependency graph to force in
+an OpenMP runtime. That proved brittle and could trigger follow-on import
+failures in `libtorch_hip.so`. Instead, preload LLVM's OpenMP runtime from the
+environment whenever it exists under `${LOCAL_PREFIX}/lib/llvm/lib` or
+`${LOCAL_PREFIX}/lib`:
+
+```bash
+export LD_PRELOAD=/opt/src/vllm/local/lib/llvm/lib/libomp.so${LD_PRELOAD:+:$LD_PRELOAD}
+```
 
 ```c
 #ifndef NPY_TARGET_VERSION

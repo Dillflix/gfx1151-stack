@@ -777,7 +777,7 @@ packages:
       - type: sed
         file: "cmake/Dependencies.cmake"
         marker: "fclang-abi-compat=17"
-        sed_command: "s/list(APPEND HIP_HIPCC_FLAGS -fclang-abi-compat=17)/# Removed: causes ABI mismatch with host amdclang 22/"
+        sed_command: "s/[[:space:]]-fclang-abi-compat=17//g"
         description: >
           Remove -fclang-abi-compat=17 from HIPCC flags. PyTorch adds it
           for compat with newer hip-clang C++20 mangling rules, but it
