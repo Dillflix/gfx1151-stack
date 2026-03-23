@@ -1529,9 +1529,9 @@ HIPEOF
     #   2. NEEDED: add librocm_smi64.so to libtorch_hip.so (PyTorch's build
     #      system omits it from the link line despite using rsmi_* symbols —
     #      upstream bug, causes "undefined symbol: rsmi_init" at runtime)
-    #   3. NEEDED: add libomp.so/libiomp5.so to libtorch_cpu.so when PyTorch
-    #      was built with clang OpenMP but the wheel omitted the runtime link,
-    #      causing "undefined symbol: __kmpc_fork_call" on import
+    #   3. NEEDED: add libomp.so/libiomp5.so to the torch._C extension when
+    #      PyTorch was built with clang OpenMP but the import path omitted the
+    #      runtime link, causing "undefined symbol: __kmpc_fork_call"
     local _torch_wheel
     _torch_wheel="$(newest_wheel "${WHEELS_DIR}"/torch-*.whl)"
     if [[ -z "${_torch_wheel}" ]]; then
@@ -1570,7 +1570,10 @@ HIPEOF
         patchelf --add-needed librocm_smi64.so "torch/lib/libtorch_hip.so"
     fi
 
-    # Add clang OpenMP runtime to libtorch_cpu.so if the wheel omitted it.
+    # Add clang OpenMP runtime to the torch._C extension if the wheel omitted it.
+    # Loading libomp/libiomp5 from the Python extension is less invasive than
+    # modifying libtorch_cpu.so itself and still guarantees the runtime is
+    # present before torch's internal libraries are resolved.
     local _omp_runtime=""
     for _candidate in \
         "${LOCAL_PREFIX}/lib/libomp.so" \
@@ -1582,9 +1585,14 @@ HIPEOF
             break
         fi
     done
-    if [[ -n "${_omp_runtime}" ]] && [[ -f "torch/lib/libtorch_cpu.so" ]] && ! readelf -d "torch/lib/libtorch_cpu.so" 2>/dev/null | grep -q "${_omp_runtime}"; then
-        info "  Adding ${_omp_runtime} to libtorch_cpu.so NEEDED"
-        patchelf --add-needed "${_omp_runtime}" "torch/lib/libtorch_cpu.so"
+    if [[ -n "${_omp_runtime}" ]]; then
+        for _so in torch/_C*.so; do
+            [[ -f "${_so}" ]] || continue
+            if ! readelf -d "${_so}" 2>/dev/null | grep -q "${_omp_runtime}"; then
+                info "  Adding ${_omp_runtime} to $(basename "${_so}") NEEDED"
+                patchelf --add-needed "${_omp_runtime}" "${_so}"
+            fi
+        done
     fi
 
     # Repack the wheel using Python's zipfile (zip may not be installed)

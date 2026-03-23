@@ -846,16 +846,17 @@ packages:
           symbols -- upstream bug that causes "undefined symbol: rsmi_init"
           at runtime.
 
-      # 8. Wheel NEEDED: add clang OpenMP runtime to libtorch_cpu.so
+      # 8. Wheel NEEDED: add clang OpenMP runtime to torch._C extension
       - type: patchelf_needed
-        target: "torch/lib/libtorch_cpu.so"
+        target: "torch/_C*.so"
         library: "libomp.so or libiomp5.so from ${LOCAL_PREFIX}/lib{,/llvm/lib}"
         condition: "NEEDED does not contain an OpenMP runtime"
         description: >
-          Add clang's OpenMP runtime to libtorch_cpu.so when the wheel
-          omits it. Without this, importing torch can fail with
-          "undefined symbol: __kmpc_fork_call" because the CPU library
-          references OpenMP entry points but no runtime gets loaded.
+          Add clang's OpenMP runtime to the torch._C extension when the
+          wheel omits it. This ensures libomp/libiomp5 is loaded at
+          import time without mutating libtorch_cpu.so itself, avoiding
+          the original "__kmpc_fork_call" failure while keeping torch's
+          internal library dependency graph unchanged.
 
   torchvision:
     repo: "https://github.com/pytorch/vision.git"

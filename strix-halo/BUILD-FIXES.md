@@ -578,15 +578,13 @@ omits that runtime from `libtorch_cpu.so`'s `NEEDED` list, so the dynamic
 linker never loads it during `import torch`.
 
 **Fix**: During the wheel unpack/patch/repack step, detect an installed OpenMP
-runtime under `${LOCAL_PREFIX}/lib` or `${LOCAL_PREFIX}/lib/llvm/lib`, add that
-library to `libtorch_cpu.so`'s `NEEDED` list, and include the LLVM runtime path
-in a normalized wheel RPATH so torch never falls back to mixed build-tree
-libraries:
+runtime under `${LOCAL_PREFIX}/lib` or `${LOCAL_PREFIX}/lib/llvm/lib`, then add
+that library to the `torch._C` extension's `NEEDED` list instead of mutating
+`libtorch_cpu.so` directly. That guarantees the runtime is loaded at import
+time while leaving torch's internal shared-library dependency graph untouched:
 
 ```bash
-patchelf --add-needed libomp.so torch/lib/libtorch_cpu.so
-patchelf --set-rpath '/opt/src/vllm/local/lib:/opt/src/vllm/local/lib/llvm/lib:$ORIGIN' \
-  torch/lib/libtorch_cpu.so
+patchelf --add-needed libomp.so torch/_C.cpython-*.so
 ```
 
 ```c
