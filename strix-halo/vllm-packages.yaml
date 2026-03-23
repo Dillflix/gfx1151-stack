@@ -809,41 +809,33 @@ packages:
           minimal stub containing only the namespace declaration.
         note: "Content is a heredoc in build-vllm.sh (too complex for YAML inline)"
 
-      # 5. Wheel RPATH: fix build tree paths in torch/lib/*.so
+      # 5. Wheel RPATH: normalize torch/lib/*.so search path
       - type: patchelf_rpath
         target: "torch/lib/lib*.so"
-        condition: "RUNPATH contains 'pytorch/build'"
-        rpath: "${LOCAL_PREFIX}/lib:$ORIGIN"
+        rpath: "${LOCAL_PREFIX}/lib:${LOCAL_PREFIX}/lib/llvm/lib:$ORIGIN"
         action: set
         description: >
-          Fix RPATHs inside PyTorch wheel. cmake bakes build tree path
-          (e.g. /opt/src/vllm/pytorch/build/lib) into RUNPATH, causing
-          the dynamic linker to load unpatched .so files from the build
-          tree instead of the wheel's copies.
+          Normalize every torch/lib/*.so RPATH inside the PyTorch wheel.
+          cmake can leak the build tree path (e.g.
+          /opt/src/vllm/pytorch/build/lib) into RUNPATH, causing the
+          dynamic linker to mix build-tree and installed wheel
+          libraries. Replacing it with only the local runtime dirs and
+          $ORIGIN keeps torch's shared libraries self-consistent and
+          also makes clang's OpenMP runtime resolvable without
+          LD_LIBRARY_PATH.
 
-      # 6. Wheel RPATH: add ROCm lib path to .so files that reference ROCm libs
-      - type: patchelf_rpath
-        target: "torch/lib/lib*.so"
-        condition: "NEEDED contains libalm.so, libamdhip64, or librocm_smi"
-        rpath: "${LOCAL_PREFIX}/lib"
-        action: add
-        description: >
-          Add ROCm lib path to .so files that dynamically link ROCm
-          libraries (libalm.so, libamdhip64, librocm_smi64) so they
-          resolve without LD_LIBRARY_PATH at runtime.
-
-      # 7. Wheel RPATH: fix _C extension module build tree path
+      # 6. Wheel RPATH: normalize torch/_C*.so search path
       - type: patchelf_rpath
         target: "torch/_C*.so"
-        condition: "RUNPATH contains 'pytorch/build'"
-        rpath: "${LOCAL_PREFIX}/lib:$ORIGIN/lib"
+        rpath: "${LOCAL_PREFIX}/lib:${LOCAL_PREFIX}/lib/llvm/lib:$ORIGIN/lib"
         action: set
         description: >
-          Fix the _C extension module RPATH. Same build tree path issue
-          as torch/lib/*.so but needs $ORIGIN/lib to find sibling .so
-          files in the wheel's lib/ subdirectory.
+          Normalize the _C extension module RPATH. It has the same
+          build-tree leakage risk as torch/lib/*.so, but also needs
+          $ORIGIN/lib to find sibling torch libraries in the wheel's
+          lib/ subdirectory.
 
-      # 8. Wheel NEEDED: add librocm_smi64.so to libtorch_hip.so
+      # 7. Wheel NEEDED: add librocm_smi64.so to libtorch_hip.so
       - type: patchelf_needed
         target: "torch/lib/libtorch_hip.so"
         library: "librocm_smi64.so"
@@ -853,6 +845,18 @@ packages:
           build system omits it from the link line despite using rsmi_*
           symbols -- upstream bug that causes "undefined symbol: rsmi_init"
           at runtime.
+
+      # 8. Wheel NEEDED: add clang OpenMP runtime to torch._C extension
+      - type: patchelf_needed
+        target: "torch/_C*.so"
+        library: "libomp.so or libiomp5.so from ${LOCAL_PREFIX}/lib{,/llvm/lib}"
+        condition: "NEEDED does not contain an OpenMP runtime"
+        description: >
+          Add clang's OpenMP runtime to the torch._C extension when the
+          wheel omits it. This ensures libomp/libiomp5 is loaded at
+          import time without mutating libtorch_cpu.so itself, avoiding
+          the original "__kmpc_fork_call" failure while keeping torch's
+          internal library dependency graph unchanged.
 
   torchvision:
     repo: "https://github.com/pytorch/vision.git"
