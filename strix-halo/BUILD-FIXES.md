@@ -580,7 +580,8 @@ linker never loads it during `import torch`.
 **Fix**: During the wheel unpack/patch/repack step, detect an installed OpenMP
 runtime under `${LOCAL_PREFIX}/lib` or `${LOCAL_PREFIX}/lib/llvm/lib`, add that
 library to `libtorch_cpu.so`'s `NEEDED` list, and include the LLVM runtime path
-in the wheel RPATH:
+in a normalized wheel RPATH so torch never falls back to mixed build-tree
+libraries:
 
 ```bash
 patchelf --add-needed libomp.so torch/lib/libtorch_cpu.so

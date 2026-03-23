@@ -1546,26 +1546,22 @@ HIPEOF
 
     local _torch_runtime_rpath="${LOCAL_PREFIX}/lib:${LOCAL_PREFIX}/lib/llvm/lib"
 
-    # Fix RPATHs: cmake bakes the build tree path into RUNPATH (e.g.
-    # /opt/src/vllm/pytorch/build/lib). This causes the dynamic linker to
-    # load unpatched .so files from the build tree instead of the wheel's
-    # copies. Clean all RPATHs to only contain the ROCm prefix and $ORIGIN.
+    # Normalize wheel RPATHs. cmake can bake the build tree path into RUNPATH
+    # (e.g. /opt/src/vllm/pytorch/build/lib), which makes the dynamic linker
+    # mix build-tree and installed torch libraries. That can surface as
+    # undefined symbols between libtorch_cpu.so and libtorch_hip.so even when
+    # the wheel itself contains matching binaries. Rewrite every torch shared
+    # library to a minimal runtime search path that only points at our local
+    # runtime directories and sibling wheel libraries.
     for _so in torch/lib/lib*.so; do
         [[ -f "${_so}" ]] || continue
-        local _rpath
-        _rpath="$(readelf -d "${_so}" 2>/dev/null | grep 'RUNPATH' || true)"
-        if echo "${_rpath}" | grep -q 'pytorch/build'; then
-            patchelf --set-rpath "${_torch_runtime_rpath}:\$ORIGIN" "${_so}" 2>/dev/null || true
-        elif readelf -d "${_so}" 2>/dev/null | grep -q 'libalm.so\|libamdhip64\|librocm_smi\|libomp.so\|libiomp5.so'; then
-            patchelf --add-rpath "${_torch_runtime_rpath}" "${_so}" 2>/dev/null || true
-        fi
+        patchelf --set-rpath "${_torch_runtime_rpath}:\$ORIGIN" "${_so}" 2>/dev/null || true
     done
-    # Also fix the _C extension module if it has build tree RPATH
+    # Do the same for the _C extension module, but keep $ORIGIN/lib so it can
+    # find sibling torch libraries inside the wheel.
     for _so in torch/_C*.so; do
         [[ -f "${_so}" ]] || continue
-        if readelf -d "${_so}" 2>/dev/null | grep -q 'pytorch/build'; then
-            patchelf --set-rpath "${_torch_runtime_rpath}:\$ORIGIN/lib" "${_so}" 2>/dev/null || true
-        fi
+        patchelf --set-rpath "${_torch_runtime_rpath}:\$ORIGIN/lib" "${_so}" 2>/dev/null || true
     done
 
     # Add librocm_smi64.so to libtorch_hip.so NEEDED list
