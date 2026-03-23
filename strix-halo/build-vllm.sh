@@ -1609,12 +1609,15 @@ HIPEOF
     # Step 2: Patch .so files INSIDE the wheel. pip wheel re-invokes cmake
     # during packaging, so patching the source tree beforehand doesn't work —
     # the wheel gets fresh unpatched copies. Instead, we unpack the .whl,
-    # patch the .so files, and repack. Two fixes:
-    #   1. RPATH: add /opt/src/vllm/local/lib so libalm.so, librocm_smi64.so,
-    #      and other ROCm libs resolve without LD_LIBRARY_PATH at runtime
+    # patch the .so files, and repack. Three fixes:
+    #   1. RPATH: add /opt/src/vllm/local/lib and /opt/src/vllm/local/lib/llvm/lib
+    #      so ROCm libs and LLVM OpenMP runtime resolve without LD_LIBRARY_PATH
     #   2. NEEDED: add librocm_smi64.so to libtorch_hip.so (PyTorch's build
     #      system omits it from the link line despite using rsmi_* symbols —
     #      upstream bug, causes "undefined symbol: rsmi_init" at runtime)
+    #   3. NEEDED: add libomp.so/libiomp5.so to the torch._C extension when
+    #      PyTorch was built with clang OpenMP but the import path omitted the
+    #      runtime link, causing "undefined symbol: __kmpc_fork_call"
     local _torch_wheel
     _torch_wheel="$(newest_wheel "${WHEELS_DIR}"/torch-*.whl)"
     if [[ -z "${_torch_wheel}" ]]; then
@@ -1627,32 +1630,55 @@ HIPEOF
     cd "${_patch_dir}"
     unzip -q "${_torch_wheel}"
 
-    # Fix RPATHs: cmake bakes the build tree path into RUNPATH (e.g.
-    # /opt/src/vllm/pytorch/build/lib). This causes the dynamic linker to
-    # load unpatched .so files from the build tree instead of the wheel's
-    # copies. Clean all RPATHs to only contain the ROCm prefix and $ORIGIN.
+    local _torch_runtime_rpath="${LOCAL_PREFIX}/lib:${LOCAL_PREFIX}/lib/llvm/lib"
+
+    # Normalize wheel RPATHs. cmake can bake the build tree path into RUNPATH
+    # (e.g. /opt/src/vllm/pytorch/build/lib), which makes the dynamic linker
+    # mix build-tree and installed torch libraries. That can surface as
+    # undefined symbols between libtorch_cpu.so and libtorch_hip.so even when
+    # the wheel itself contains matching binaries. Rewrite every torch shared
+    # library to a minimal runtime search path that only points at our local
+    # runtime directories and sibling wheel libraries.
     for _so in torch/lib/lib*.so; do
         [[ -f "${_so}" ]] || continue
-        local _rpath
-        _rpath="$(readelf -d "${_so}" 2>/dev/null | grep 'RUNPATH' || true)"
-        if echo "${_rpath}" | grep -q 'pytorch/build'; then
-            patchelf --set-rpath "${LOCAL_PREFIX}/lib:\$ORIGIN" "${_so}" 2>/dev/null || true
-        elif readelf -d "${_so}" 2>/dev/null | grep -q 'libalm.so\|libamdhip64\|librocm_smi'; then
-            patchelf --add-rpath "${LOCAL_PREFIX}/lib" "${_so}" 2>/dev/null || true
-        fi
+        patchelf --set-rpath "${_torch_runtime_rpath}:\$ORIGIN" "${_so}" 2>/dev/null || true
     done
-    # Also fix the _C extension module if it has build tree RPATH
+    # Do the same for the _C extension module, but keep $ORIGIN/lib so it can
+    # find sibling torch libraries inside the wheel.
     for _so in torch/_C*.so; do
         [[ -f "${_so}" ]] || continue
-        if readelf -d "${_so}" 2>/dev/null | grep -q 'pytorch/build'; then
-            patchelf --set-rpath "${LOCAL_PREFIX}/lib:\$ORIGIN/lib" "${_so}" 2>/dev/null || true
-        fi
+        patchelf --set-rpath "${_torch_runtime_rpath}:\$ORIGIN/lib" "${_so}" 2>/dev/null || true
     done
 
     # Add librocm_smi64.so to libtorch_hip.so NEEDED list
     if [[ -f "torch/lib/libtorch_hip.so" ]] && ! readelf -d "torch/lib/libtorch_hip.so" 2>/dev/null | grep -q 'librocm_smi64'; then
         info "  Adding librocm_smi64.so to libtorch_hip.so NEEDED"
         patchelf --add-needed librocm_smi64.so "torch/lib/libtorch_hip.so"
+    fi
+
+    # Add clang OpenMP runtime to the torch._C extension if the wheel omitted it.
+    # Loading libomp/libiomp5 from the Python extension is less invasive than
+    # modifying libtorch_cpu.so itself and still guarantees the runtime is
+    # present before torch's internal libraries are resolved.
+    local _omp_runtime=""
+    for _candidate in \
+        "${LOCAL_PREFIX}/lib/libomp.so" \
+        "${LOCAL_PREFIX}/lib/libiomp5.so" \
+        "${LOCAL_PREFIX}/lib/llvm/lib/libomp.so" \
+        "${LOCAL_PREFIX}/lib/llvm/lib/libiomp5.so"; do
+        if [[ -f "${_candidate}" ]]; then
+            _omp_runtime="$(basename "${_candidate}")"
+            break
+        fi
+    done
+    if [[ -n "${_omp_runtime}" ]]; then
+        for _so in torch/_C*.so; do
+            [[ -f "${_so}" ]] || continue
+            if ! readelf -d "${_so}" 2>/dev/null | grep -q "${_omp_runtime}"; then
+                info "  Adding ${_omp_runtime} to $(basename "${_so}") NEEDED"
+                patchelf --add-needed "${_omp_runtime}" "${_so}"
+            fi
+        done
     fi
 
     # Repack the wheel using Python's zipfile (zip may not be installed)
