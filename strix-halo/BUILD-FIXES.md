@@ -553,7 +553,24 @@ build tree references:
 patchelf --set-rpath '/opt/src/vllm/local/lib:$ORIGIN' torch/lib/libtorch_python.so
 ```
 
-### 25c. NumPy 2.0 ABI target version
+### 25c. Validation retry for stale installed torch artifacts
+
+**Symptom**: Step 12 (`Validate PyTorch GPU access`) fails on `import torch`
+with `libtorch_hip.so: undefined symbol: _ZN2at4cuda4blas4gemm...` even
+though the wheel was rebuilt from a clean `build/` directory.
+
+**Root cause**: In some failed/retried builds, the virtualenv can still hold
+stale `torch/`, `torch-*.dist-info`, or `functorch/` artifacts from an older
+install. When Python resolves mixed old/new extension modules from the same
+environment, `libtorch_hip.so` can be loaded without the matching symbol
+provider from the rebuilt wheel.
+
+**Fix**: During validation, detect this exact unresolved-symbol import
+failure, remove old torch artifacts from the active site-packages directory,
+reinstall the newest locally built torch wheel with `uv pip install
+--force-reinstall --no-deps`, and retry the import once before failing.
+
+### 25d. NumPy 2.0 ABI target version
 
 **Symptom**: `import torch` crashes with "A module that was compiled using
 NumPy 1.x cannot be run in NumPy 2.4.3".
@@ -566,7 +583,7 @@ check when loaded with numpy >= 2.0.
 **Fix**: Patch `torch/csrc/utils/numpy_stub.h` to set `NPY_TARGET_VERSION`
 before including `<numpy/arrayobject.h>`:
 
-### 25d. Missing OpenMP runtime linkage in libtorch_cpu.so
+### 25e. Missing OpenMP runtime linkage in libtorch_cpu.so
 
 **Symptom**: `import torch` fails immediately with:
 

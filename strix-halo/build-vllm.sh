@@ -151,13 +151,19 @@ configure_openmp_runtime_env() {
     done
 }
 
+is_known_pytorch_rocm_import_failure() {
+    local _log_file="${1}"
+    [[ -f "${_log_file}" ]] || return 1
+    grep -q 'libtorch_hip.so: undefined symbol: _ZN2at4cuda4blas4gemm' "${_log_file}"
+}
+
 diagnose_pytorch_import_failure() {
     local _log_file="${1}"
     [[ -f "${_log_file}" ]] || return 0
 
-    if grep -q 'libtorch_hip.so: undefined symbol: _ZN2at4cuda4blas4gemm' "${_log_file}"; then
+    if is_known_pytorch_rocm_import_failure "${_log_file}"; then
         warn "Detected libtorch_hip.so unresolved at::cuda::blas::gemm symbol."
-        warn "This is an unresolved PyTorch ROCm import failure. No verified automatic fix is known in this script."
+        warn "This is a PyTorch ROCm import failure; the validator will attempt one clean wheel reinstall before giving up."
         warn "Environment: LD_PRELOAD=${LD_PRELOAD:-<unset>}"
         warn "Environment: LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"
         if [[ -f "${PYTORCH_SRC}/cmake/Dependencies.cmake" ]]; then
@@ -208,6 +214,42 @@ diagnose_pytorch_import_failure() {
             rm -f "${_ld_debug_log}"
         fi
     fi
+}
+
+retry_pytorch_wheel_install() {
+    local _torch_wheel
+    _torch_wheel="$(newest_wheel "${WHEELS_DIR}"/torch-*.whl)"
+    if [[ -z "${_torch_wheel}" ]]; then
+        warn "Cannot retry PyTorch import recovery: no torch wheel found in ${WHEELS_DIR}"
+        return 1
+    fi
+
+    warn "Retrying PyTorch install from wheel after known ROCm import failure..."
+    python - <<'PY'
+import pathlib
+import shutil
+import site
+
+removed = []
+for base in site.getsitepackages() + [site.getusersitepackages()]:
+    root = pathlib.Path(base)
+    if not root.exists():
+        continue
+    for pattern in ("torch", "torch-*.dist-info", "torch-*.egg-info", "functorch"):
+        for path in root.glob(pattern):
+            if not path.exists():
+                continue
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+            removed.append(str(path))
+
+print("Removed old torch artifacts:" if removed else "No old torch artifacts found.")
+for item in removed:
+    print(f"  {item}")
+PY
+    uv pip install --force-reinstall --no-deps "${_torch_wheel}"
 }
 
 # =============================================================================
@@ -1724,8 +1766,8 @@ validate_pytorch() {
 
     local _torch_validate_log
     _torch_validate_log="$(mktemp)"
-
-    python -c "
+    local _validate_cmd
+    _validate_cmd="$(cat <<'PY'
 import torch
 print(f'  PyTorch version: {torch.__version__}')
 print(f'  CUDA available: {torch.cuda.is_available()}')
@@ -1735,12 +1777,24 @@ if torch.cuda.is_available():
     print(f'  Device count: {torch.cuda.device_count()}')
 else:
     raise RuntimeError('PyTorch cannot see GPU — build may have failed')
-" >"${_torch_validate_log}" 2>&1 || {
+PY
+)"
+
+    if ! python -c "${_validate_cmd}" >"${_torch_validate_log}" 2>&1; then
         cat "${_torch_validate_log}" >&2
         diagnose_pytorch_import_failure "${_torch_validate_log}"
-        rm -f "${_torch_validate_log}"
-        die "PyTorch GPU validation failed"
-    }
+        if is_known_pytorch_rocm_import_failure "${_torch_validate_log}" && retry_pytorch_wheel_install; then
+            if ! python -c "${_validate_cmd}" >"${_torch_validate_log}" 2>&1; then
+                cat "${_torch_validate_log}" >&2
+                diagnose_pytorch_import_failure "${_torch_validate_log}"
+                rm -f "${_torch_validate_log}"
+                die "PyTorch GPU validation failed after reinstall retry"
+            fi
+        else
+            rm -f "${_torch_validate_log}"
+            die "PyTorch GPU validation failed"
+        fi
+    fi
 
     cat "${_torch_validate_log}"
     rm -f "${_torch_validate_log}"
