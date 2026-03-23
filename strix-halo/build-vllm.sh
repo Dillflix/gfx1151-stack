@@ -134,6 +134,23 @@ detect_distro() {
 
 detect_distro
 
+configure_openmp_runtime_env() {
+    local _runtime_root="${1:-${ROCM_PATH:-${LOCAL_PREFIX:-}}}"
+    local _candidate
+    for _candidate in \
+        "${_runtime_root}/lib/llvm/lib/libomp.so" \
+        "${_runtime_root}/lib/llvm/lib/libiomp5.so" \
+        "${_runtime_root}/lib/libomp.so" \
+        "${_runtime_root}/lib/libiomp5.so"; do
+        [[ -f "${_candidate}" ]] || continue
+        case ":${LD_PRELOAD:-}:" in
+            *:"${_candidate}":*) return 0 ;;
+        esac
+        export LD_PRELOAD="${_candidate}${LD_PRELOAD:+:${LD_PRELOAD}}"
+        return 0
+    done
+}
+
 # =============================================================================
 # YAML Manifest Helpers
 # =============================================================================
@@ -1227,6 +1244,7 @@ create_managed_venv() {
 
     if [[ -d "${LOCAL_PREFIX}/lib" ]]; then
         export LD_LIBRARY_PATH="${LOCAL_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+        configure_openmp_runtime_env "${LOCAL_PREFIX}"
     fi
 
     if [[ "${install_deps}" == "yes" ]]; then
@@ -1375,6 +1393,7 @@ validate_rocm() {
     export ROCM_PATH="${LOCAL_PREFIX}"
     export LD_LIBRARY_PATH="${ROCM_PATH}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
     export PATH="${ROCM_PATH}/lib/llvm/bin:${ROCM_PATH}/bin:${PATH}"
+    configure_openmp_runtime_env "${ROCM_PATH}"
 
     # Create clang/clang++ symlinks to amdclang/amdclang++ so that build
     # systems looking for "clang" on PATH find the AMD-optimized variant.
@@ -4678,6 +4697,7 @@ main() {
         export ROCM_PATH="${LOCAL_PREFIX}"
         export LD_LIBRARY_PATH="${LOCAL_PREFIX}/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
         export PATH="${LOCAL_PREFIX}/lib/llvm/bin:${LOCAL_PREFIX}/bin:${PATH}"
+        configure_openmp_runtime_env "${LOCAL_PREFIX}"
         if [[ -d "${LOCAL_PREFIX}/llvm/amdgcn/bitcode" ]]; then
             export DEVICE_LIB_PATH="${LOCAL_PREFIX}/llvm/amdgcn/bitcode"
             export HIP_DEVICE_LIB_PATH="${LOCAL_PREFIX}/llvm/amdgcn/bitcode"
