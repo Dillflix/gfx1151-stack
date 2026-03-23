@@ -151,6 +151,22 @@ configure_openmp_runtime_env() {
     done
 }
 
+diagnose_pytorch_import_failure() {
+    local _log_file="${1}"
+    [[ -f "${_log_file}" ]] || return 0
+
+    if grep -q 'libtorch_hip.so: undefined symbol: _ZN2at4cuda4blas4gemm' "${_log_file}"; then
+        warn "Detected libtorch_hip.so unresolved at::cuda::blas::gemm symbol."
+        warn "This matches the known HIP ABI mismatch caused by -fclang-abi-compat=17."
+        warn "PyTorch wheel patching is NOT a verified fix for this failure."
+        warn "Check that cmake/Dependencies.cmake no longer contains -fclang-abi-compat=17 and rebuild from a clean PyTorch build tree."
+        if [[ -f "${PYTORCH_SRC}/cmake/Dependencies.cmake" ]]; then
+            warn "Relevant lines from ${PYTORCH_SRC}/cmake/Dependencies.cmake:"
+            grep -n 'fclang-abi-compat\|HIP_HIPCC_FLAGS' "${PYTORCH_SRC}/cmake/Dependencies.cmake" | tail -n 10 || true
+        fi
+    fi
+}
+
 # =============================================================================
 # YAML Manifest Helpers
 # =============================================================================
@@ -1508,6 +1524,10 @@ build_pytorch() {
     # patchelf patches are skipped here (applied to unpacked wheel below).
     apply_patches pytorch "${PYTORCH_SRC}"
 
+    if grep -q -- '-fclang-abi-compat=17' "${PYTORCH_SRC}/cmake/Dependencies.cmake"; then
+        die "PyTorch ABI patch failed: cmake/Dependencies.cmake still contains -fclang-abi-compat=17"
+    fi
+
     # HIPGraph.hip: file_rewrite (too complex for YAML, handled inline)
     local _hipgraph="${PYTORCH_SRC}/aten/src/ATen/hip/HIPGraph.hip"
     if [[ -f "${_hipgraph}" ]] && grep -q 'cudaGraphConditionalHandle' "${_hipgraph}"; then
@@ -1530,6 +1550,10 @@ HIPEOF
 
     # Step 1: Build the wheel. pip wheel runs cmake (incremental if build/
     # exists) and packages everything into a .whl file.
+    if [[ -d "${PYTORCH_SRC}/build" ]]; then
+        info "Removing stale PyTorch build tree to avoid reusing objects with old HIP ABI flags..."
+        rm -rf "${PYTORCH_SRC}/build"
+    fi
     info "Building PyTorch wheel (this takes 1-2 hours on first build)..."
     mkdir -p "${WHEELS_DIR}"
     pip wheel . \
@@ -1655,6 +1679,9 @@ with zipfile.ZipFile('${_torch_wheel}', 'w', zipfile.ZIP_DEFLATED) as zf:
 validate_pytorch() {
     log_step 12 "Validate PyTorch GPU access"
 
+    local _torch_validate_log
+    _torch_validate_log="$(mktemp)"
+
     python -c "
 import torch
 print(f'  PyTorch version: {torch.__version__}')
@@ -1665,7 +1692,15 @@ if torch.cuda.is_available():
     print(f'  Device count: {torch.cuda.device_count()}')
 else:
     raise RuntimeError('PyTorch cannot see GPU — build may have failed')
-" || die "PyTorch GPU validation failed"
+" >"${_torch_validate_log}" 2>&1 || {
+        cat "${_torch_validate_log}" >&2
+        diagnose_pytorch_import_failure "${_torch_validate_log}"
+        rm -f "${_torch_validate_log}"
+        die "PyTorch GPU validation failed"
+    }
+
+    cat "${_torch_validate_log}"
+    rm -f "${_torch_validate_log}"
 
     success "PyTorch GPU access verified"
 }

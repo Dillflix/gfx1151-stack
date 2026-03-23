@@ -435,7 +435,10 @@ mangled differently between `libtorch_cpu.so` and `libtorch_hip.so`).
 mangling rules". This forces HIP device code to use Clang 17 ABI while host
 code uses amdclang 22 ABI, causing name mangling mismatches.
 
-**Fix**: Remove the `-fclang-abi-compat=17` line from `Dependencies.cmake`.
+**Fix**: Remove the `-fclang-abi-compat=17` token from `Dependencies.cmake`
+and rebuild PyTorch from a clean `build/` directory. Incremental rebuilds can
+reuse objects compiled with the old HIP ABI flag and keep the mismatch alive
+even after the source patch is present.
 
 ### 19. Missing librocm_smi64.so linkage (upstream bug)
 
