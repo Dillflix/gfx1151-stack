@@ -184,7 +184,42 @@ the profiler stack and `roctx64` are intentionally unavailable.
 **Fix**: Inject `-DROCTX=OFF` into TheRock's RCCL subproject cmake args so
 RCCL skips its optional ROCTX tracing path entirely.
 
-### 10f. hipBLASLt enables ROCTX markers by default
+### 10f. RCCL rccl_common.h misses tuner macro definitions
+
+**Symptom**: RCCL's `rccl_wrap.cc` fails during the TheRock build with:
+`use of undeclared identifier 'NCCL_NUM_ALGORITHMS'` and
+`use of undeclared identifier 'NCCL_NUM_PROTOCOLS'`
+
+**Root cause**: Newer RCCL snapshots moved `NCCL_NUM_ALGORITHMS` and
+`NCCL_NUM_PROTOCOLS` into `src/include/plugin/nccl_tuner.h`, but
+`src/include/rccl_common.h` still references them after including only
+`nccl_common.h`, `nccl.h`, `param.h`, and `core.h`. In the generated hipify
+header tree that leaves the tuner macros undefined when `rccl_wrap.cc`
+compiles.
+
+**Fix**: Inject `#include "plugin/nccl_tuner.h"` into `rocm-systems/projects/rccl/src/include/rccl_common.h` so the
+internal tuner macro definitions are available before the RCCL addon algorithm
+and protocol declarations.
+
+### 10g. RCCL nvtx.h ignores NVTX stub mode for direct includes
+
+**Symptom**: RCCL's `group.cc` fails during the TheRock build with macro
+redefinition warnings followed by `redefinition of 'nccl_domain'` between
+`nvtx.h` and `nvtx_stub.h`.
+
+**Root cause**: TheRock already passes `-DNVTX_NO_IMPL`, and RCCL's `core.h`
+properly switches to `nvtx_stub.h` in that mode. However, some RCCL sources
+include `nvtx.h` directly, and `nvtx.h` itself does not currently honor
+`NVTX_NO_IMPL`, so both the real NVTX declarations and the stub declarations
+end up active in the same translation unit.
+
+**Fix**: Wrap `rocm-systems/projects/rccl/src/include/nvtx.h` itself in an
+`#ifdef NVTX_NO_IMPL` guard that includes `nvtx_stub.h`, and extend
+`rocm-systems/projects/rccl/src/include/nvtx_stub.h` with a no-op
+`NCCL_NVTX3_FUNC_RANGE` definition so sources using the common NVTX macro
+surface still compile in stub mode.
+
+### 10h. hipBLASLt enables ROCTX markers by default
 
 **Symptom**: hipBLASLt configure fails with:
 `Could not find super-project find_library(NAMES roctx64)`
@@ -211,6 +246,20 @@ intentionally absent.
 
 **Fix**: Inject `-DHIPSPARSELT_ENABLE_MARKER=OFF` into TheRock's hipSPARSELt
 subproject cmake args so configure skips the optional ROCTX marker path.
+
+### 10f3. MIOpen still probes roctracer headers when profiler is disabled
+
+**Symptom**: MIOpen configure fails with:
+`Could not find super-project find_path(NAMES roctracer/roctx.h)`
+
+**Root cause**: MIOpen's top-level `CMakeLists.txt` sets
+`MIOPEN_USE_ROCTRACER` to `ON` by default. On non-Windows builds that makes
+configure call `find_path(roctracer/roctx.h)` and `find_library(roctx64)`,
+which conflicts with this build's `THEROCK_ENABLE_PROFILER=OFF`
+configuration where roctracer/roctx64 are intentionally absent.
+
+**Fix**: Inject `-DMIOPEN_USE_ROCTRACER=OFF` into TheRock's MIOpen subproject
+cmake args so the optional rocTracer/ROCTX probe is skipped entirely.
 
 ### 10g. rocprofiler-sdk yaml-cpp patch path moved in current TheRock layout
 
@@ -381,12 +430,15 @@ namespace declaration and a comment explaining the removal.
 **Symptom**: Undefined symbol errors at link time (e.g., `const_data_ptr<Half>`
 mangled differently between `libtorch_cpu.so` and `libtorch_hip.so`).
 
-**Root cause**: PyTorch's `cmake/Dependencies.cmake` adds
-`-fclang-abi-compat=17` to HIPCC flags "for compat with newer hip-clang C++20
-mangling rules". This forces HIP device code to use Clang 17 ABI while host
-code uses amdclang 22 ABI, causing name mangling mismatches.
+**Root cause**: PyTorch's ROCm build injects `-fclang-abi-compat=17` in two
+places: top-level host flags in `CMakeLists.txt` and HIP flags in
+`cmake/Dependencies.cmake`. On current amdclang releases that Clang 17 ABI
+override can still leave host/HIP objects mangled inconsistently, producing
+undefined symbols between `libtorch_cpu.so` and `libtorch_hip.so`.
 
-**Fix**: Remove the `-fclang-abi-compat=17` line from `Dependencies.cmake`.
+**Fix**: Remove both `-fclang-abi-compat=17` injections — the host-side
+`append_cxx_flag_if_supported(... CMAKE_CXX_FLAGS)` line in `CMakeLists.txt`
+and the HIPCC line in `cmake/Dependencies.cmake`.
 
 ### 19. Missing librocm_smi64.so linkage (upstream bug)
 
@@ -522,6 +574,24 @@ before including `<numpy/arrayobject.h>`:
 
 The hex value must be used directly because `NPY_2_0_API_VERSION` is defined
 inside `numpyconfig.h` which is included by `arrayobject.h`.
+
+### 25d. PyTorch wheel misses the LLVM OpenMP runtime path/dependency
+
+**Symptom**: `import torch` fails immediately with:
+`ImportError: .../libtorch_cpu.so: undefined symbol: __kmpc_fork_call`
+
+**Root cause**: The source-built PyTorch wheel is compiled with amdclang's
+OpenMP runtime, but the packaged wheel patching only added
+`${LOCAL_PREFIX}/lib` to RPATH and only injected `librocm_smi64.so` into
+`libtorch_hip.so`. The OpenMP runtime lives under
+`${LOCAL_PREFIX}/lib/llvm/lib`, and some wheel builds also leave
+`libtorch_cpu.so` without an explicit `libomp.so` NEEDED entry. That leaves
+the `__kmpc_*` symbols unresolved at import time.
+
+**Fix**: During the unpack/patch/repack step, rewrite PyTorch wheel RPATHs to
+include both `${LOCAL_PREFIX}/lib` and `${LOCAL_PREFIX}/lib/llvm/lib`, and add
+`libomp.so` to `libtorch_cpu.so` when it still exports unresolved
+`__kmpc_fork_call` without an existing `libomp` dependency.
 
 ## TorchVision (Phase C, Steps 12-13)
 

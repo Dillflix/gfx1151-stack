@@ -1524,11 +1524,15 @@ HIPEOF
     # during packaging, so patching the source tree beforehand doesn't work —
     # the wheel gets fresh unpatched copies. Instead, we unpack the .whl,
     # patch the .so files, and repack. Two fixes:
-    #   1. RPATH: add /opt/src/vllm/local/lib so libalm.so, librocm_smi64.so,
-    #      and other ROCm libs resolve without LD_LIBRARY_PATH at runtime
+    #   1. RPATH: add /opt/src/vllm/local/lib and the LLVM runtime dir so
+    #      ROCm libs, libomp.so, and sibling torch/*.so files resolve without
+    #      LD_LIBRARY_PATH at runtime
     #   2. NEEDED: add librocm_smi64.so to libtorch_hip.so (PyTorch's build
     #      system omits it from the link line despite using rsmi_* symbols —
     #      upstream bug, causes "undefined symbol: rsmi_init" at runtime)
+    #   3. NEEDED: add libomp.so to libtorch_cpu.so when the amdclang-built
+    #      wheel leaves __kmpc_* symbols unresolved without an explicit OpenMP
+    #      dependency, causing "undefined symbol: __kmpc_fork_call" on import
     local _torch_wheel
     _torch_wheel="$(newest_wheel "${WHEELS_DIR}"/torch-*.whl)"
     if [[ -z "${_torch_wheel}" ]]; then
@@ -1544,29 +1548,34 @@ HIPEOF
     # Fix RPATHs: cmake bakes the build tree path into RUNPATH (e.g.
     # /opt/src/vllm/pytorch/build/lib). This causes the dynamic linker to
     # load unpatched .so files from the build tree instead of the wheel's
-    # copies. Clean all RPATHs to only contain the ROCm prefix and $ORIGIN.
+    # copies. Clean all RPATHs to only contain the ROCm prefix, the LLVM
+    # runtime dir (libomp.so), and $ORIGIN.
+    local _torch_lib_rpath="${LOCAL_PREFIX}/lib:${LOCAL_PREFIX}/lib/llvm/lib:\$ORIGIN"
+    local _torch_ext_rpath="${LOCAL_PREFIX}/lib:${LOCAL_PREFIX}/lib/llvm/lib:\$ORIGIN/lib"
     for _so in torch/lib/lib*.so; do
         [[ -f "${_so}" ]] || continue
-        local _rpath
-        _rpath="$(readelf -d "${_so}" 2>/dev/null | grep 'RUNPATH' || true)"
-        if echo "${_rpath}" | grep -q 'pytorch/build'; then
-            patchelf --set-rpath "${LOCAL_PREFIX}/lib:\$ORIGIN" "${_so}" 2>/dev/null || true
-        elif readelf -d "${_so}" 2>/dev/null | grep -q 'libalm.so\|libamdhip64\|librocm_smi'; then
-            patchelf --add-rpath "${LOCAL_PREFIX}/lib" "${_so}" 2>/dev/null || true
-        fi
+        patchelf --set-rpath "${_torch_lib_rpath}" "${_so}" 2>/dev/null || true
     done
-    # Also fix the _C extension module if it has build tree RPATH
+    # Also fix the _C extension module so it finds wheel-local torch/lib/*.so
+    # plus the ROCm and LLVM/OpenMP runtimes from the install prefix.
     for _so in torch/_C*.so; do
         [[ -f "${_so}" ]] || continue
-        if readelf -d "${_so}" 2>/dev/null | grep -q 'pytorch/build'; then
-            patchelf --set-rpath "${LOCAL_PREFIX}/lib:\$ORIGIN/lib" "${_so}" 2>/dev/null || true
-        fi
+        patchelf --set-rpath "${_torch_ext_rpath}" "${_so}" 2>/dev/null || true
     done
 
     # Add librocm_smi64.so to libtorch_hip.so NEEDED list
     if [[ -f "torch/lib/libtorch_hip.so" ]] && ! readelf -d "torch/lib/libtorch_hip.so" 2>/dev/null | grep -q 'librocm_smi64'; then
         info "  Adding librocm_smi64.so to libtorch_hip.so NEEDED"
         patchelf --add-needed librocm_smi64.so "torch/lib/libtorch_hip.so"
+    fi
+
+    # Add libomp.so to libtorch_cpu.so when PyTorch's amdclang/OpenMP link
+    # leaves __kmpc_* symbols unresolved without an explicit NEEDED entry.
+    if [[ -f "torch/lib/libtorch_cpu.so" ]] \
+        && readelf --dyn-syms "torch/lib/libtorch_cpu.so" 2>/dev/null | grep -q '__kmpc_fork_call' \
+        && ! readelf -d "torch/lib/libtorch_cpu.so" 2>/dev/null | grep -q 'libomp'; then
+        info "  Adding libomp.so to libtorch_cpu.so NEEDED"
+        patchelf --add-needed libomp.so "torch/lib/libtorch_cpu.so"
     fi
 
     # Repack the wheel using Python's zipfile (zip may not be installed)

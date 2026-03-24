@@ -422,6 +422,60 @@ packages:
           which fails under TheRock builds configured with
           THEROCK_ENABLE_PROFILER=OFF because roctracer/roctx64 are not built.
 
+      # 9b. Restore RCCL tuner macro definitions before rccl_common.h uses them
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/rccl_common.h"
+        marker: '#include "plugin/nccl_tuner.h"'
+        marker_absent: true
+        sed_command: |-
+          /#include "nccl.h"/a\
+          #include "plugin\/nccl_tuner.h"
+        description: >
+          Ensure RCCL's internal tuner macros are visible before rccl_common.h
+          references NCCL_NUM_ALGORITHMS and NCCL_NUM_PROTOCOLS. The current
+          RCCL snapshot defines those macros in plugin/nccl_tuner.h, so newer
+          rccl_common.h revisions fail to compile if that header is not pulled
+          in explicitly.
+
+      # 9c. Make RCCL's NVTX header honor the stub-only build configuration
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/nvtx.h"
+        marker: '#ifdef NVTX_NO_IMPL'
+        marker_absent: true
+        sed_command: |-
+          /^#define NCCL_NVTX_H_$/a\
+          #ifdef NVTX_NO_IMPL\
+          #include "nvtx_stub.h"\
+          #else
+        description: >
+          Make RCCL's nvtx.h defer to nvtx_stub.h when TheRock passes
+          -DNVTX_NO_IMPL. Some sources include nvtx.h directly instead of going
+          through core.h, so without this guard the real NVTX declarations and
+          stub declarations are both compiled, causing nccl_domain and macro
+          redefinition errors.
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/nvtx.h"
+        marker: '#endif // NVTX_NO_IMPL'
+        marker_absent: true
+        sed_command: |-
+          $i\
+          #endif // NVTX_NO_IMPL
+        description: >
+          Close the NVTX_NO_IMPL guard added to RCCL's nvtx.h so profiler-
+          disabled builds consistently use the stub header path.
+      - type: sed
+        file: "rocm-systems/projects/rccl/src/include/nvtx_stub.h"
+        marker: '#define NCCL_NVTX3_FUNC_RANGE'
+        marker_absent: true
+        sed_command: |-
+          /#define NVTX3_RANGE_ADD_PAYLOAD(N, S, P)/a\
+          #define NCCL_NVTX3_FUNC_RANGE
+        description: >
+          Extend RCCL's NVTX stub header with a no-op NCCL_NVTX3_FUNC_RANGE
+          definition. Several sources use that macro through core.h, so once
+          nvtx.h honors NVTX_NO_IMPL the stub path must also provide the same
+          API surface.
+
       # 10. Disable hipBLASLt ROCTX marker support when profiler stack is disabled
       - type: sed
         file: "math-libs/BLAS/CMakeLists.txt"
@@ -445,6 +499,17 @@ packages:
           defaults HIPSPARSELT_ENABLE_MARKER to ON on non-Windows builds and
           then hard-requires roctx64/roctracer during configure, which is
           incompatible with THEROCK_ENABLE_PROFILER=OFF.
+
+      - type: sed
+        file: "ml-libs/CMakeLists.txt"
+        marker: "-DMIOPEN_USE_ROCTRACER=OFF"
+        marker_absent: true
+        sed_command: '/-DMIOPEN_USE_COMPOSABLEKERNEL=/a\      -DMIOPEN_USE_ROCTRACER=OFF'
+        description: >
+          Disable MIOpen's optional rocTracer/ROCTX integration. MIOpen
+          enables MIOPEN_USE_ROCTRACER by default and then probes for
+          roctracer/roctx.h and roctx64 during configure, which fails when
+          THEROCK_ENABLE_PROFILER=OFF intentionally omits the profiler stack.
 
       # 11. Disable rocBLAS ROCTX integration when profiler stack is disabled
       - type: sed
@@ -708,7 +773,18 @@ packages:
           numpy 2.x headers compile against oldest compatible API (1.20),
           producing a .so that crashes at import with numpy 2.x installed.
 
-      # 2. Remove -fclang-abi-compat=17 (ABI mismatch with amdclang 22)
+      # 2. Remove host-side -fclang-abi-compat=17 (ABI mismatch with amdclang 22)
+      - type: sed
+        file: "CMakeLists.txt"
+        marker: 'append_cxx_flag_if_supported("-fclang-abi-compat=17" CMAKE_CXX_FLAGS)'
+        sed_command: 's/append_cxx_flag_if_supported(\"-fclang-abi-compat=17\" CMAKE_CXX_FLAGS)/# Removed: causes ABI mismatch with amdclang 22/'
+        description: >
+          Remove the top-level host C++ ABI compatibility override. The ROCm
+          fork also injects -fclang-abi-compat=17 into CMAKE_CXX_FLAGS for
+          Clang >= 18, which can still leave torch host objects mangled for
+          the Clang 17 ABI and trigger unresolved symbols at import time.
+
+      # 3. Remove HIP-side -fclang-abi-compat=17 (ABI mismatch with amdclang 22)
       - type: sed
         file: "cmake/Dependencies.cmake"
         marker: "fclang-abi-compat=17"
@@ -719,7 +795,7 @@ packages:
           forces HIP device code to use Clang 17 ABI while host code uses
           amdclang 22 ABI, causing undefined symbol errors.
 
-      # 3. Add gfx1151 to CK GEMM supported architectures
+      # 4. Add gfx1151 to CK GEMM supported architectures
       - type: sed
         file: "aten/src/ATen/Context.cpp"
         marker: "gfx1151"
@@ -731,7 +807,7 @@ packages:
           architecture!" and TunableOp cannot include CK kernels in its
           autotuning candidates. The gate is a hardcoded vector of arch strings.
 
-      # 4. Remove HIPGraph.hip dead code (CUDA 12.4+ type with no HIP equivalent)
+      # 5. Remove HIPGraph.hip dead code (CUDA 12.4+ type with no HIP equivalent)
       - type: file_rewrite
         file: "aten/src/ATen/hip/HIPGraph.hip"
         marker: "cudaGraphConditionalHandle"
