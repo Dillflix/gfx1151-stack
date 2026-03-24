@@ -773,7 +773,18 @@ packages:
           numpy 2.x headers compile against oldest compatible API (1.20),
           producing a .so that crashes at import with numpy 2.x installed.
 
-      # 2. Remove -fclang-abi-compat=17 (ABI mismatch with amdclang 22)
+      # 2. Remove host-side -fclang-abi-compat=17 (ABI mismatch with amdclang 22)
+      - type: sed
+        file: "CMakeLists.txt"
+        marker: 'append_cxx_flag_if_supported("-fclang-abi-compat=17" CMAKE_CXX_FLAGS)'
+        sed_command: 's/append_cxx_flag_if_supported(\"-fclang-abi-compat=17\" CMAKE_CXX_FLAGS)/# Removed: causes ABI mismatch with amdclang 22/'
+        description: >
+          Remove the top-level host C++ ABI compatibility override. The ROCm
+          fork also injects -fclang-abi-compat=17 into CMAKE_CXX_FLAGS for
+          Clang >= 18, which can still leave torch host objects mangled for
+          the Clang 17 ABI and trigger unresolved symbols at import time.
+
+      # 3. Remove HIP-side -fclang-abi-compat=17 (ABI mismatch with amdclang 22)
       - type: sed
         file: "cmake/Dependencies.cmake"
         marker: "fclang-abi-compat=17"
@@ -784,7 +795,7 @@ packages:
           forces HIP device code to use Clang 17 ABI while host code uses
           amdclang 22 ABI, causing undefined symbol errors.
 
-      # 3. Add gfx1151 to CK GEMM supported architectures
+      # 4. Add gfx1151 to CK GEMM supported architectures
       - type: sed
         file: "aten/src/ATen/Context.cpp"
         marker: "gfx1151"
@@ -796,7 +807,7 @@ packages:
           architecture!" and TunableOp cannot include CK kernels in its
           autotuning candidates. The gate is a hardcoded vector of arch strings.
 
-      # 4. Remove HIPGraph.hip dead code (CUDA 12.4+ type with no HIP equivalent)
+      # 5. Remove HIPGraph.hip dead code (CUDA 12.4+ type with no HIP equivalent)
       - type: file_rewrite
         file: "aten/src/ATen/hip/HIPGraph.hip"
         marker: "cudaGraphConditionalHandle"

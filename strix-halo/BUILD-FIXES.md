@@ -430,15 +430,15 @@ namespace declaration and a comment explaining the removal.
 **Symptom**: Undefined symbol errors at link time (e.g., `const_data_ptr<Half>`
 mangled differently between `libtorch_cpu.so` and `libtorch_hip.so`).
 
-**Root cause**: PyTorch's `cmake/Dependencies.cmake` adds
-`-fclang-abi-compat=17` to HIPCC flags "for compat with newer hip-clang C++20
-mangling rules". This forces HIP device code to use Clang 17 ABI while host
-code uses amdclang 22 ABI, causing name mangling mismatches.
+**Root cause**: PyTorch's ROCm build injects `-fclang-abi-compat=17` in two
+places: top-level host flags in `CMakeLists.txt` and HIP flags in
+`cmake/Dependencies.cmake`. On current amdclang releases that Clang 17 ABI
+override can still leave host/HIP objects mangled inconsistently, producing
+undefined symbols between `libtorch_cpu.so` and `libtorch_hip.so`.
 
-**Fix**: Remove the `-fclang-abi-compat=17` token from `Dependencies.cmake`
-and rebuild PyTorch from a clean `build/` directory. Incremental rebuilds can
-reuse objects compiled with the old HIP ABI flag and keep the mismatch alive
-even after the source patch is present.
+**Fix**: Remove both `-fclang-abi-compat=17` injections — the host-side
+`append_cxx_flag_if_supported(... CMAKE_CXX_FLAGS)` line in `CMakeLists.txt`
+and the HIPCC line in `cmake/Dependencies.cmake`.
 
 ### 19. Missing librocm_smi64.so linkage (upstream bug)
 
@@ -615,6 +615,24 @@ export LD_PRELOAD=/opt/src/vllm/local/lib/llvm/lib/libomp.so${LD_PRELOAD:+:$LD_P
 
 The hex value must be used directly because `NPY_2_0_API_VERSION` is defined
 inside `numpyconfig.h` which is included by `arrayobject.h`.
+
+### 25d. PyTorch wheel misses the LLVM OpenMP runtime path/dependency
+
+**Symptom**: `import torch` fails immediately with:
+`ImportError: .../libtorch_cpu.so: undefined symbol: __kmpc_fork_call`
+
+**Root cause**: The source-built PyTorch wheel is compiled with amdclang's
+OpenMP runtime, but the packaged wheel patching only added
+`${LOCAL_PREFIX}/lib` to RPATH and only injected `librocm_smi64.so` into
+`libtorch_hip.so`. The OpenMP runtime lives under
+`${LOCAL_PREFIX}/lib/llvm/lib`, and some wheel builds also leave
+`libtorch_cpu.so` without an explicit `libomp.so` NEEDED entry. That leaves
+the `__kmpc_*` symbols unresolved at import time.
+
+**Fix**: During the unpack/patch/repack step, rewrite PyTorch wheel RPATHs to
+include both `${LOCAL_PREFIX}/lib` and `${LOCAL_PREFIX}/lib/llvm/lib`, and add
+`libomp.so` to `libtorch_cpu.so` when it still exports unresolved
+`__kmpc_fork_call` without an existing `libomp` dependency.
 
 ## TorchVision (Phase C, Steps 12-13)
 
