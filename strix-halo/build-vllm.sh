@@ -4104,12 +4104,20 @@ build_rust_wheels() {
 
     mkdir -p "${WHEELS_DIR}"
 
-    # Verify Rust toolchain
+    # Verify Rust toolchain.
+    # In non-interactive shells, rustup's PATH hook may not be loaded even when
+    # Rust is already installed under ~/.cargo/bin.
+    if ! command -v rustc &>/dev/null || ! command -v cargo &>/dev/null; then
+        if [[ -f "${HOME}/.cargo/env" ]]; then
+            # shellcheck disable=SC1090
+            source "${HOME}/.cargo/env"
+        fi
+    fi
     if ! command -v rustc &>/dev/null; then
-        die "Rust toolchain not found. Install with: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+        die "Rust toolchain not found (rustc missing from PATH). Install with: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
     fi
     if ! command -v cargo &>/dev/null; then
-        die "cargo not found. Install with rustup."
+        die "cargo not found (cargo missing from PATH). Install with rustup."
     fi
 
     local rust_ver
