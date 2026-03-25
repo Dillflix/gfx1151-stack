@@ -4086,17 +4086,31 @@ print('PASS')
     if [[ -n "${SMOKE_SKIP_LEMONADE:-}" ]]; then
         results[lemonade]="SKIP"
         info "Lemonade: SKIP (SMOKE_SKIP_LEMONADE set)"
-    elif ! python -c "import lemonade" 2>/dev/null; then
+    elif ! python -c "
+import importlib.util
+assert importlib.util.find_spec('lemonade') or importlib.util.find_spec('lemonade_sdk')
+" 2>/dev/null; then
         results[lemonade]="SKIP"
         warn "Lemonade: SKIP (SDK not importable)"
     else
         info "Running Lemonade SDK inference..."
         if python -c "
-try:
-    from lemonade.api import from_pretrained
-except ModuleNotFoundError:
-    # lemonade-sdk >=10 flattened API into top-level package.
-    from lemonade import from_pretrained
+from_pretrained = None
+for _mod_name, _attr in (
+    ('lemonade.api', 'from_pretrained'),
+    ('lemonade', 'from_pretrained'),
+    ('lemonade_sdk.api', 'from_pretrained'),
+    ('lemonade_sdk', 'from_pretrained'),
+):
+    try:
+        _mod = __import__(_mod_name, fromlist=[_attr])
+        from_pretrained = getattr(_mod, _attr)
+        break
+    except (ModuleNotFoundError, AttributeError):
+        continue
+
+if from_pretrained is None:
+    raise ModuleNotFoundError('Could not import from_pretrained from lemonade/lemonade_sdk')
 
 print('Loading model via Lemonade (hf-dgpu): ${hf_model}')
 model, tokenizer = from_pretrained(
@@ -4748,10 +4762,19 @@ install_lemonade_sdk() {
     # The SDK handles llama-server process management, model downloads, .env loading,
     # and hardware detection. We install from PyPI.
 
-    # Check if already installed
-    if python -c "import lemonade" 2>/dev/null; then
+    # Check if already installed. Import path can vary by SDK release.
+    if python -c "
+import importlib.util
+assert importlib.util.find_spec('lemonade') or importlib.util.find_spec('lemonade_sdk')
+" 2>/dev/null; then
         info "Lemonade SDK already installed in venv"
-        python -c "import lemonade; print(f'  Version: {lemonade.__version__}')" 2>/dev/null || true
+        python -c "
+try:
+    import lemonade as _lem
+except ModuleNotFoundError:
+    import lemonade_sdk as _lem
+print(f'  Version: {getattr(_lem, "__version__", "unknown")}')
+" 2>/dev/null || true
     else
         info "Installing lemonade-sdk from PyPI..."
         pip install lemonade-sdk 2>&1
@@ -4850,7 +4873,10 @@ validate_lemonade() {
     fi
 
     # Check Lemonade SDK import
-    if python -c "import lemonade" 2>/dev/null; then
+    if python -c "
+import importlib.util
+assert importlib.util.find_spec('lemonade') or importlib.util.find_spec('lemonade_sdk')
+" 2>/dev/null; then
         success "Lemonade SDK importable in venv"
     else
         warn "Lemonade SDK not importable — run step 34"
