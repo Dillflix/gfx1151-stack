@@ -4209,8 +4209,14 @@ build_native_wheels() {
     # isolation, the cmake Python module isn't available, so sentencepiece and
     # pyarrow both fail when their build scripts invoke cmake. Replace the
     # broken wrapper with a symlink to the real system cmake.
-    local _real_cmake
-    _real_cmake="$(command -v cmake 2>/dev/null || true)"
+    local _real_cmake _cmake_candidate
+    _real_cmake=""
+    while IFS= read -r _cmake_candidate; do
+        [[ -x "${_cmake_candidate}" ]] || continue
+        [[ "${_cmake_candidate}" == "${VLLM_DIR}/.venv/bin/cmake" ]] && continue
+        _real_cmake="${_cmake_candidate}"
+        break
+    done < <(which -a cmake 2>/dev/null || true)
     if [[ -f "${VLLM_DIR}/.venv/bin/cmake" ]] && head -1 "${VLLM_DIR}/.venv/bin/cmake" | grep -q python; then
         if [[ -n "${_real_cmake}" && "${_real_cmake}" != "${VLLM_DIR}/.venv/bin/cmake" ]]; then
             info "Replacing broken Python cmake wrapper with symlink to ${_real_cmake}"
