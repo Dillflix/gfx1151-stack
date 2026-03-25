@@ -3808,7 +3808,6 @@ print(path)
     if [[ -n "${smoke_gpu_index}" ]]; then
         export HIP_VISIBLE_DEVICES="${smoke_gpu_index}"
         export ROCR_VISIBLE_DEVICES="${smoke_gpu_index}"
-        export CUDA_VISIBLE_DEVICES="${smoke_gpu_index}"
         export GGML_VK_VISIBLE_DEVICES="${smoke_gpu_index}"
         info "Pinned smoke backends to GPU index ${smoke_gpu_index} (SMOKE_GPU_INDEX override supported)"
     else
