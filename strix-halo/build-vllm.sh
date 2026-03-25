@@ -3800,6 +3800,36 @@ print(path)
         fi
     fi
 
+    # ── Device pinning (multi-GPU hosts) ────────────────────────────────
+    # This stack is built for gfx1151; on systems with both dGPU + iGPU,
+    # runtime auto-selection may pick a non-gfx1151 board and crash.
+    local smoke_gpu_index="${SMOKE_GPU_INDEX:-}"
+    if [[ -z "${smoke_gpu_index}" ]]; then
+        smoke_gpu_index="$(
+            python -c "
+import torch
+idx = None
+if torch.cuda.is_available():
+    for i in range(torch.cuda.device_count()):
+        arch = getattr(torch.cuda.get_device_properties(i), 'gcnArchName', '')
+        if 'gfx1151' in str(arch):
+            idx = i
+            break
+if idx is not None:
+    print(idx)
+" 2>/dev/null
+        )"
+    fi
+    if [[ -n "${smoke_gpu_index}" ]]; then
+        export HIP_VISIBLE_DEVICES="${smoke_gpu_index}"
+        export ROCR_VISIBLE_DEVICES="${smoke_gpu_index}"
+        export CUDA_VISIBLE_DEVICES="${smoke_gpu_index}"
+        export GGML_VK_VISIBLE_DEVICES="${smoke_gpu_index}"
+        info "Pinned smoke backends to GPU index ${smoke_gpu_index} (SMOKE_GPU_INDEX override supported)"
+    else
+        warn "Could not auto-detect a gfx1151 GPU index; using runtime default device selection"
+    fi
+
     # ── Backend 1/5: vLLM (offline inference + TunableOp warmup) ─────────
     section "Backend 1/5: vLLM (offline inference + TunableOp warmup)"
 
@@ -3828,6 +3858,12 @@ print(path)
     fi
     local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510_${tunableop_stack_tag}.csv"
     info "TunableOp CSV: ${tunableop_csv}"
+    # Keep smoke runs deterministic: stale/partially-written tuning entries from
+    # prior crashes can poison first inference and obscure root-cause debugging.
+    if [[ -f "${tunableop_csv}" ]]; then
+        info "Resetting TunableOp CSV for clean smoke run"
+        rm -f "${tunableop_csv}"
+    fi
 
     local _vllm_output
     local _vllm_log="${VLLM_DIR}/backend-smoke-vllm.log"
