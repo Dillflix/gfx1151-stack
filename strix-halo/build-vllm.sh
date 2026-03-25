@@ -3800,6 +3800,20 @@ print(path)
         fi
     fi
 
+    # ── Device pinning (multi-GPU hosts) ────────────────────────────────
+    # Honor explicit override without probing torch.cuda here. Probing CUDA in
+    # the parent process can initialize runtime state before vLLM spawns worker
+    # processes, which breaks multiprocessing startup.
+    local smoke_gpu_index="${SMOKE_GPU_INDEX:-}"
+    if [[ -n "${smoke_gpu_index}" ]]; then
+        export HIP_VISIBLE_DEVICES="${smoke_gpu_index}"
+        export ROCR_VISIBLE_DEVICES="${smoke_gpu_index}"
+        export GGML_VK_VISIBLE_DEVICES="${smoke_gpu_index}"
+        info "Pinned smoke backends to GPU index ${smoke_gpu_index} (SMOKE_GPU_INDEX override supported)"
+    else
+        warn "SMOKE_GPU_INDEX not set; using runtime default device selection"
+    fi
+
     # ── Backend 1/5: vLLM (offline inference + TunableOp warmup) ─────────
     section "Backend 1/5: vLLM (offline inference + TunableOp warmup)"
 
@@ -3808,13 +3822,48 @@ print(path)
         info "vLLM: SKIP (SMOKE_SKIP_VLLM set)"
     else
 
-    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510.csv"
+    local vllm_runtime_versions
+    vllm_runtime_versions="$(
+        python -c "from importlib.metadata import version; print(f\"torch={version('torch')} triton={version('triton')} vllm={version('vllm')}\")" 2>/dev/null
+    )"
+    if [[ -n "${vllm_runtime_versions}" ]]; then
+        info "vLLM runtime versions: ${vllm_runtime_versions}"
+    else
+        warn "vLLM runtime versions: unavailable (import failed)"
+    fi
+
+    local tunableop_stack_tag
+    tunableop_stack_tag="$(
+        python -c "import torch, triton; print(f\"torch{torch.__version__.split('+')[0]}_triton{triton.__version__}\")" 2>/dev/null \
+        | tr -c '[:alnum:]_.-' '_'
+    )"
+    if [[ -z "${tunableop_stack_tag}" ]]; then
+        tunableop_stack_tag="unknown_stack"
+    fi
+    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510_${tunableop_stack_tag}.csv"
     info "TunableOp CSV: ${tunableop_csv}"
+    # Keep smoke runs deterministic: stale/partially-written tuning entries from
+    # prior crashes can poison first inference and obscure root-cause debugging.
+    if [[ -f "${tunableop_csv}" ]]; then
+        info "Resetting TunableOp CSV for clean smoke run"
+        rm -f "${tunableop_csv}"
+    fi
 
     local _vllm_output
     local _vllm_log="${VLLM_DIR}/backend-smoke-vllm.log"
     if _vllm_output="$(env -u VLLM_DIR -u VLLM_VENV -u VLLM_SRC -u VLLM_LOG python -c "
 import os
+import multiprocessing as mp
+
+# Set multiprocessing mode before importing vLLM/torch internals. This avoids
+# ROCm/CUDA lazy-init conflicts in worker bootstrap paths that still assume
+# default fork semantics.
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
+
 os.environ['PYTORCH_TUNABLEOP_ENABLED'] = '1'
 os.environ['PYTORCH_TUNABLEOP_FILENAME'] = '${tunableop_csv}'
 os.environ['PYTORCH_TUNABLEOP_TUNING'] = '1'
@@ -3876,9 +3925,17 @@ print('PASS')
             warn "vLLM smoke test full log: ${_vllm_log}"
             warn "vLLM smoke test tail (last 120 lines):"
             tail -n 120 "${_vllm_log}" || true
+            if grep -q "No module named 'triton.language.target_info'" "${_vllm_log}"; then
+                warn "Detected Triton target_info import errors."
+                warn "ROCm Triton intentionally does not ship CUDA-only target_info/gluon APIs."
+                warn "On this stack, treat these lines as compatibility noise unless followed by a hard runtime fault."
+            fi
+            if grep -qE 'Memory access fault by GPU|HSA_STATUS|hipError' "${_vllm_log}"; then
+                warn "Detected a hard GPU runtime fault during model bring-up (likely the true failure cause)."
+            fi
             if grep -q 'Engine core initialization failed' "${_vllm_log}"; then
                 warn "Detected vLLM core startup failure. Showing likely root-cause lines:"
-                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS' "${_vllm_log}" | tail -n 80 || true
+                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS|Memory access fault by GPU' "${_vllm_log}" | tail -n 80 || true
             fi
         fi
         results[vllm]="FAIL"
