@@ -3801,25 +3801,10 @@ print(path)
     fi
 
     # ── Device pinning (multi-GPU hosts) ────────────────────────────────
-    # This stack is built for gfx1151; on systems with both dGPU + iGPU,
-    # runtime auto-selection may pick a non-gfx1151 board and crash.
+    # Honor explicit override without probing torch.cuda here. Probing CUDA in
+    # the parent process can initialize runtime state before vLLM spawns worker
+    # processes, which breaks multiprocessing startup.
     local smoke_gpu_index="${SMOKE_GPU_INDEX:-}"
-    if [[ -z "${smoke_gpu_index}" ]]; then
-        smoke_gpu_index="$(
-            python -c "
-import torch
-idx = None
-if torch.cuda.is_available():
-    for i in range(torch.cuda.device_count()):
-        arch = getattr(torch.cuda.get_device_properties(i), 'gcnArchName', '')
-        if 'gfx1151' in str(arch):
-            idx = i
-            break
-if idx is not None:
-    print(idx)
-" 2>/dev/null
-        )"
-    fi
     if [[ -n "${smoke_gpu_index}" ]]; then
         export HIP_VISIBLE_DEVICES="${smoke_gpu_index}"
         export ROCR_VISIBLE_DEVICES="${smoke_gpu_index}"
@@ -3827,7 +3812,7 @@ if idx is not None:
         export GGML_VK_VISIBLE_DEVICES="${smoke_gpu_index}"
         info "Pinned smoke backends to GPU index ${smoke_gpu_index} (SMOKE_GPU_INDEX override supported)"
     else
-        warn "Could not auto-detect a gfx1151 GPU index; using runtime default device selection"
+        warn "SMOKE_GPU_INDEX not set; using runtime default device selection"
     fi
 
     # ── Backend 1/5: vLLM (offline inference + TunableOp warmup) ─────────
@@ -3840,7 +3825,7 @@ if idx is not None:
 
     local vllm_runtime_versions
     vllm_runtime_versions="$(
-        python -c "import torch, triton, vllm; print(f\"torch={torch.__version__} triton={triton.__version__} vllm={vllm.__version__}\")" 2>/dev/null
+        python -c "from importlib.metadata import version; print(f\"torch={version('torch')} triton={version('triton')} vllm={version('vllm')}\")" 2>/dev/null
     )"
     if [[ -n "${vllm_runtime_versions}" ]]; then
         info "vLLM runtime versions: ${vllm_runtime_versions}"
