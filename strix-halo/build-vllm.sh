@@ -3811,7 +3811,8 @@ print(path)
     local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510.csv"
     info "TunableOp CSV: ${tunableop_csv}"
 
-    if python -c "
+    local _vllm_output
+    if _vllm_output="$(env -u VLLM_DIR -u VLLM_VENV -u VLLM_SRC -u VLLM_LOG python -c "
 import os
 os.environ['PYTORCH_TUNABLEOP_ENABLED'] = '1'
 os.environ['PYTORCH_TUNABLEOP_FILENAME'] = '${tunableop_csv}'
@@ -3858,7 +3859,8 @@ for out in outputs:
 # the engine is broken.
 assert total_output_tokens > 0, 'vLLM produced zero output tokens across all prompts'
 print('PASS')
-"; then
+" 2>&1)" && echo "${_vllm_output}" | grep -q '^PASS$' && ! echo "${_vllm_output}" | grep -q 'Traceback (most recent call last):'; then
+        echo "${_vllm_output}"
         results[vllm]="PASS"
         success "vLLM: PASS"
         if [[ -f "${tunableop_csv}" ]]; then
@@ -3867,6 +3869,7 @@ print('PASS')
             info "TunableOp CSV populated: ${csv_lines} kernel entries"
         fi
     else
+        [[ -n "${_vllm_output:-}" ]] && echo "${_vllm_output}" | tail -n 40
         results[vllm]="FAIL"
         warn "vLLM: FAIL"
     fi
@@ -3892,7 +3895,7 @@ print('PASS')
         timeout 120 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
-        local _rocm_output
+        local _rocm_output _rocm_text
         if _rocm_output="$(timeout 60 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
@@ -3900,20 +3903,26 @@ print('PASS')
             --no-display-prompt \
             --single-turn \
             -ngl 99 \
-            2>/dev/null)"; then
-            # Extract model response: line starting with "| " (llama-cli conversation format)
-            _rocm_output="$(echo "${_rocm_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
-            if [[ -n "${_rocm_output}" ]]; then
+            2>&1)"; then
+            # Extract model response. Prefer conversation lines ("| ..."), then
+            # fallback to last non-empty line to handle llama-cli output changes.
+            _rocm_text="$(echo "${_rocm_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
+            if [[ -z "${_rocm_text}" ]]; then
+                _rocm_text="$(echo "${_rocm_output}" | sed 's/\x1b\[[0-9;]*m//g' | awk 'NF {last=$0} END {print last}' | head -c 200)"
+            fi
+            if [[ -n "${_rocm_text}" ]]; then
                 results[llamacpp_rocm]="PASS"
                 success "llama.cpp ROCm: PASS"
-                info "  Output: ${_rocm_output:0:80}"
+                info "  Output: ${_rocm_text:0:80}"
             else
                 results[llamacpp_rocm]="FAIL"
                 warn "llama.cpp ROCm: FAIL (empty output)"
+                echo "${_rocm_output}" | tail -n 40
             fi
         else
             results[llamacpp_rocm]="FAIL"
             warn "llama.cpp ROCm: FAIL (inference error)"
+            [[ -n "${_rocm_output:-}" ]] && echo "${_rocm_output}" | tail -n 40
         fi
     fi
 
@@ -3936,7 +3945,7 @@ print('PASS')
         timeout 120 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
-        local _vulkan_output
+        local _vulkan_output _vulkan_text
         if _vulkan_output="$(timeout 60 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
@@ -3944,20 +3953,26 @@ print('PASS')
             --no-display-prompt \
             --single-turn \
             -ngl 99 \
-            2>/dev/null)"; then
-            # Extract model response: line starting with "| " (llama-cli conversation format)
-            _vulkan_output="$(echo "${_vulkan_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
-            if [[ -n "${_vulkan_output}" ]]; then
+            2>&1)"; then
+            # Extract model response. Prefer conversation lines ("| ..."), then
+            # fallback to last non-empty line to handle llama-cli output changes.
+            _vulkan_text="$(echo "${_vulkan_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
+            if [[ -z "${_vulkan_text}" ]]; then
+                _vulkan_text="$(echo "${_vulkan_output}" | sed 's/\x1b\[[0-9;]*m//g' | awk 'NF {last=$0} END {print last}' | head -c 200)"
+            fi
+            if [[ -n "${_vulkan_text}" ]]; then
                 results[llamacpp_vulkan]="PASS"
                 success "llama.cpp Vulkan: PASS"
-                info "  Output: ${_vulkan_output:0:80}"
+                info "  Output: ${_vulkan_text:0:80}"
             else
                 results[llamacpp_vulkan]="FAIL"
                 warn "llama.cpp Vulkan: FAIL (empty output)"
+                echo "${_vulkan_output}" | tail -n 40
             fi
         else
             results[llamacpp_vulkan]="FAIL"
             warn "llama.cpp Vulkan: FAIL (inference error)"
+            [[ -n "${_vulkan_output:-}" ]] && echo "${_vulkan_output}" | tail -n 40
         fi
     fi
 
@@ -3973,7 +3988,11 @@ print('PASS')
     else
         info "Running Lemonade SDK inference..."
         if python -c "
-from lemonade.api import from_pretrained
+try:
+    from lemonade.api import from_pretrained
+except ModuleNotFoundError:
+    # lemonade-sdk >=10 flattened API into top-level package.
+    from lemonade import from_pretrained
 
 print('Loading model via Lemonade (hf-dgpu): ${hf_model}')
 model, tokenizer = from_pretrained(
