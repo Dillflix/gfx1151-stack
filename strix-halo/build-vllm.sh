@@ -3812,6 +3812,7 @@ print(path)
     info "TunableOp CSV: ${tunableop_csv}"
 
     local _vllm_output
+    local _vllm_log="${VLLM_DIR}/backend-smoke-vllm.log"
     if _vllm_output="$(env -u VLLM_DIR -u VLLM_VENV -u VLLM_SRC -u VLLM_LOG python -c "
 import os
 os.environ['PYTORCH_TUNABLEOP_ENABLED'] = '1'
@@ -3863,13 +3864,23 @@ print('PASS')
         echo "${_vllm_output}"
         results[vllm]="PASS"
         success "vLLM: PASS"
+        printf '%s\n' "${_vllm_output}" > "${_vllm_log}"
         if [[ -f "${tunableop_csv}" ]]; then
             local csv_lines
             csv_lines="$(wc -l < "${tunableop_csv}")"
             info "TunableOp CSV populated: ${csv_lines} kernel entries"
         fi
     else
-        [[ -n "${_vllm_output:-}" ]] && echo "${_vllm_output}" | tail -n 40
+        if [[ -n "${_vllm_output:-}" ]]; then
+            printf '%s\n' "${_vllm_output}" > "${_vllm_log}"
+            warn "vLLM smoke test full log: ${_vllm_log}"
+            warn "vLLM smoke test tail (last 120 lines):"
+            tail -n 120 "${_vllm_log}" || true
+            if grep -q 'Engine core initialization failed' "${_vllm_log}"; then
+                warn "Detected vLLM core startup failure. Showing likely root-cause lines:"
+                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS' "${_vllm_log}" | tail -n 80 || true
+            fi
+        fi
         results[vllm]="FAIL"
         warn "vLLM: FAIL"
     fi
