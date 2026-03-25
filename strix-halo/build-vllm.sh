@@ -3804,24 +3804,35 @@ print(path)
     # Honor explicit override without probing torch.cuda here. Probing CUDA in
     # the parent process can initialize runtime state before vLLM spawns worker
     # processes, which breaks multiprocessing startup.
-    local smoke_gpu_index="${SMOKE_GPU_INDEX:-}"
-    if [[ -n "${smoke_gpu_index}" ]]; then
+    local smoke_rocm_gpu_index="${SMOKE_ROCM_GPU_INDEX:-${SMOKE_GPU_INDEX:-}}"
+    local smoke_vk_gpu_index="${SMOKE_VK_GPU_INDEX:-${SMOKE_GPU_INDEX:-}}"
+
+    # ROCm and Vulkan device indices can differ on mixed-GPU hosts.
+    if [[ -n "${smoke_rocm_gpu_index}" ]]; then
         local _rocm_visible_ok
         _rocm_visible_ok="$(
-            HIP_VISIBLE_DEVICES="${smoke_gpu_index}" ROCR_VISIBLE_DEVICES="${smoke_gpu_index}" \
+            HIP_VISIBLE_DEVICES="${smoke_rocm_gpu_index}" ROCR_VISIBLE_DEVICES="${smoke_rocm_gpu_index}" \
                 python -c "import torch; print(1 if torch.cuda.is_available() and torch.cuda.device_count() > 0 else 0)" 2>/dev/null
         )"
         if [[ "${_rocm_visible_ok}" == "1" ]]; then
-            export HIP_VISIBLE_DEVICES="${smoke_gpu_index}"
-            export ROCR_VISIBLE_DEVICES="${smoke_gpu_index}"
-            info "Pinned ROCm smoke backends to GPU index ${smoke_gpu_index}"
+            export HIP_VISIBLE_DEVICES="${smoke_rocm_gpu_index}"
+            export ROCR_VISIBLE_DEVICES="${smoke_rocm_gpu_index}"
+            info "Pinned ROCm smoke backends to GPU index ${smoke_rocm_gpu_index}"
         else
-            warn "SMOKE_GPU_INDEX=${smoke_gpu_index} hides all ROCm devices; leaving HIP/ROCR visibility unchanged"
+            warn "ROCm index ${smoke_rocm_gpu_index} is not visible; falling back to ROCm index 0"
+            export HIP_VISIBLE_DEVICES=0
+            export ROCR_VISIBLE_DEVICES=0
+            info "Pinned ROCm smoke backends to GPU index 0"
         fi
-        export GGML_VK_VISIBLE_DEVICES="${smoke_gpu_index}"
-        info "Pinned Vulkan smoke backends to GPU index ${smoke_gpu_index} (SMOKE_GPU_INDEX override supported)"
     else
-        warn "SMOKE_GPU_INDEX not set; using runtime default device selection"
+        warn "SMOKE_ROCM_GPU_INDEX/SMOKE_GPU_INDEX not set; using runtime default ROCm device selection"
+    fi
+
+    if [[ -n "${smoke_vk_gpu_index}" ]]; then
+        export GGML_VK_VISIBLE_DEVICES="${smoke_vk_gpu_index}"
+        info "Pinned Vulkan smoke backends to GPU index ${smoke_vk_gpu_index}"
+    else
+        warn "SMOKE_VK_GPU_INDEX/SMOKE_GPU_INDEX not set; using runtime default Vulkan device selection"
     fi
 
     # ── Backend 1/5: vLLM (offline inference + TunableOp warmup) ─────────
