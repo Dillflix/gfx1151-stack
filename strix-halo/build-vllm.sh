@@ -3808,7 +3808,25 @@ print(path)
         info "vLLM: SKIP (SMOKE_SKIP_VLLM set)"
     else
 
-    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510.csv"
+    local vllm_runtime_versions
+    vllm_runtime_versions="$(
+        python -c "import torch, triton, vllm; print(f\"torch={torch.__version__} triton={triton.__version__} vllm={vllm.__version__}\")" 2>/dev/null
+    )"
+    if [[ -n "${vllm_runtime_versions}" ]]; then
+        info "vLLM runtime versions: ${vllm_runtime_versions}"
+    else
+        warn "vLLM runtime versions: unavailable (import failed)"
+    fi
+
+    local tunableop_stack_tag
+    tunableop_stack_tag="$(
+        python -c "import torch, triton; print(f\"torch{torch.__version__.split('+')[0]}_triton{triton.__version__}\")" 2>/dev/null \
+        | tr -c '[:alnum:]_.-' '_'
+    )"
+    if [[ -z "${tunableop_stack_tag}" ]]; then
+        tunableop_stack_tag="unknown_stack"
+    fi
+    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510_${tunableop_stack_tag}.csv"
     info "TunableOp CSV: ${tunableop_csv}"
 
     local _vllm_output
