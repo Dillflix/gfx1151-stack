@@ -3806,10 +3806,20 @@ print(path)
     # processes, which breaks multiprocessing startup.
     local smoke_gpu_index="${SMOKE_GPU_INDEX:-}"
     if [[ -n "${smoke_gpu_index}" ]]; then
-        export HIP_VISIBLE_DEVICES="${smoke_gpu_index}"
-        export ROCR_VISIBLE_DEVICES="${smoke_gpu_index}"
+        local _rocm_visible_ok
+        _rocm_visible_ok="$(
+            HIP_VISIBLE_DEVICES="${smoke_gpu_index}" ROCR_VISIBLE_DEVICES="${smoke_gpu_index}" \
+                python -c "import torch; print(1 if torch.cuda.is_available() and torch.cuda.device_count() > 0 else 0)" 2>/dev/null
+        )"
+        if [[ "${_rocm_visible_ok}" == "1" ]]; then
+            export HIP_VISIBLE_DEVICES="${smoke_gpu_index}"
+            export ROCR_VISIBLE_DEVICES="${smoke_gpu_index}"
+            info "Pinned ROCm smoke backends to GPU index ${smoke_gpu_index}"
+        else
+            warn "SMOKE_GPU_INDEX=${smoke_gpu_index} hides all ROCm devices; leaving HIP/ROCR visibility unchanged"
+        fi
         export GGML_VK_VISIBLE_DEVICES="${smoke_gpu_index}"
-        info "Pinned smoke backends to GPU index ${smoke_gpu_index} (SMOKE_GPU_INDEX override supported)"
+        info "Pinned Vulkan smoke backends to GPU index ${smoke_gpu_index} (SMOKE_GPU_INDEX override supported)"
     else
         warn "SMOKE_GPU_INDEX not set; using runtime default device selection"
     fi
