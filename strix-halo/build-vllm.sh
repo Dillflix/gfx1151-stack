@@ -3800,6 +3800,39 @@ print(path)
         fi
     fi
 
+    # ── Device pinning (multi-GPU hosts) ────────────────────────────────
+    # Honor explicit override without probing torch.cuda here. Probing CUDA in
+    # the parent process can initialize runtime state before vLLM spawns worker
+    # processes, which breaks multiprocessing startup.
+    local smoke_rocm_gpu_index="${SMOKE_ROCM_GPU_INDEX:-${SMOKE_GPU_INDEX:-}}"
+    local smoke_vk_gpu_index="${SMOKE_VK_GPU_INDEX:-${SMOKE_GPU_INDEX:-}}"
+
+    # ROCm and Vulkan device indices can differ on mixed-GPU hosts.
+    if [[ -n "${smoke_rocm_gpu_index}" ]]; then
+        local _rocm_visible_ok
+        _rocm_visible_ok="$(
+            HIP_VISIBLE_DEVICES="${smoke_rocm_gpu_index}" \
+                python -c "import torch; print(1 if torch.cuda.is_available() and torch.cuda.device_count() > 0 else 0)" 2>/dev/null
+        )"
+        if [[ "${_rocm_visible_ok}" == "1" ]]; then
+            export HIP_VISIBLE_DEVICES="${smoke_rocm_gpu_index}"
+            info "Pinned ROCm smoke backends to GPU index ${smoke_rocm_gpu_index}"
+        else
+            warn "ROCm index ${smoke_rocm_gpu_index} is not visible; falling back to ROCm index 0"
+            export HIP_VISIBLE_DEVICES=0
+            info "Pinned ROCm smoke backends to GPU index 0"
+        fi
+    else
+        warn "SMOKE_ROCM_GPU_INDEX/SMOKE_GPU_INDEX not set; using runtime default ROCm device selection"
+    fi
+
+    if [[ -n "${smoke_vk_gpu_index}" ]]; then
+        export GGML_VK_VISIBLE_DEVICES="${smoke_vk_gpu_index}"
+        info "Pinned Vulkan smoke backends to GPU index ${smoke_vk_gpu_index}"
+    else
+        warn "SMOKE_VK_GPU_INDEX/SMOKE_GPU_INDEX not set; using runtime default Vulkan device selection"
+    fi
+
     # ── Backend 1/5: vLLM (offline inference + TunableOp warmup) ─────────
     section "Backend 1/5: vLLM (offline inference + TunableOp warmup)"
 
@@ -3808,13 +3841,48 @@ print(path)
         info "vLLM: SKIP (SMOKE_SKIP_VLLM set)"
     else
 
-    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510.csv"
+    local vllm_runtime_versions
+    vllm_runtime_versions="$(
+        python -c "from importlib.metadata import version; print(f\"torch={version('torch')} triton={version('triton')} vllm={version('vllm')}\")" 2>/dev/null
+    )"
+    if [[ -n "${vllm_runtime_versions}" ]]; then
+        info "vLLM runtime versions: ${vllm_runtime_versions}"
+    else
+        warn "vLLM runtime versions: unavailable (import failed)"
+    fi
+
+    local tunableop_stack_tag
+    tunableop_stack_tag="$(
+        python -c "import torch, triton; print(f\"torch{torch.__version__.split('+')[0]}_triton{triton.__version__}\")" 2>/dev/null \
+        | tr -c '[:alnum:]_.-' '_'
+    )"
+    if [[ -z "${tunableop_stack_tag}" ]]; then
+        tunableop_stack_tag="unknown_stack"
+    fi
+    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510_${tunableop_stack_tag}.csv"
     info "TunableOp CSV: ${tunableop_csv}"
+    # Keep smoke runs deterministic: stale/partially-written tuning entries from
+    # prior crashes can poison first inference and obscure root-cause debugging.
+    if [[ -f "${tunableop_csv}" ]]; then
+        info "Resetting TunableOp CSV for clean smoke run"
+        rm -f "${tunableop_csv}"
+    fi
 
     local _vllm_output
     local _vllm_log="${VLLM_DIR}/backend-smoke-vllm.log"
     if _vllm_output="$(env -u VLLM_DIR -u VLLM_VENV -u VLLM_SRC -u VLLM_LOG python -c "
 import os
+import multiprocessing as mp
+
+# Set multiprocessing mode before importing vLLM/torch internals. This avoids
+# ROCm/CUDA lazy-init conflicts in worker bootstrap paths that still assume
+# default fork semantics.
+try:
+    mp.set_start_method('spawn', force=True)
+except RuntimeError:
+    pass
+os.environ['VLLM_WORKER_MULTIPROC_METHOD'] = 'spawn'
+
 os.environ['PYTORCH_TUNABLEOP_ENABLED'] = '1'
 os.environ['PYTORCH_TUNABLEOP_FILENAME'] = '${tunableop_csv}'
 os.environ['PYTORCH_TUNABLEOP_TUNING'] = '1'
@@ -3876,9 +3944,17 @@ print('PASS')
             warn "vLLM smoke test full log: ${_vllm_log}"
             warn "vLLM smoke test tail (last 120 lines):"
             tail -n 120 "${_vllm_log}" || true
+            if grep -q "No module named 'triton.language.target_info'" "${_vllm_log}"; then
+                warn "Detected Triton target_info import errors."
+                warn "ROCm Triton intentionally does not ship CUDA-only target_info/gluon APIs."
+                warn "On this stack, treat these lines as compatibility noise unless followed by a hard runtime fault."
+            fi
+            if grep -qE 'Memory access fault by GPU|HSA_STATUS|hipError' "${_vllm_log}"; then
+                warn "Detected a hard GPU runtime fault during model bring-up (likely the true failure cause)."
+            fi
             if grep -q 'Engine core initialization failed' "${_vllm_log}"; then
                 warn "Detected vLLM core startup failure. Showing likely root-cause lines:"
-                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS' "${_vllm_log}" | tail -n 80 || true
+                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS|Memory access fault by GPU' "${_vllm_log}" | tail -n 80 || true
             fi
         fi
         results[vllm]="FAIL"
@@ -3900,21 +3976,24 @@ print('PASS')
         results[llamacpp_rocm]="SKIP"
         warn "llama.cpp ROCm: SKIP (llama-cli not found at ${LLAMACPP_INSTALL_DIR}/llama-cli)"
     else
+        local smoke_llamacpp_timeout="${SMOKE_LLAMACPP_TIMEOUT:-180}"
         info "Running: ${LLAMACPP_INSTALL_DIR}/llama-cli -m ${gguf_file}"
         # Warmup: first run loads model weights and initializes GPU buffers
         info "  Warmup pass..."
-        timeout 120 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
+        printf '/exit\n' | timeout -k 15 120 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
-        local _rocm_output _rocm_text
-        if _rocm_output="$(timeout 60 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
+        local _rocm_output _rocm_text _rocm_status
+        _rocm_output="$(printf '/exit\n' | timeout -k 15 "${smoke_llamacpp_timeout}" "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
             -n "${max_tokens}" \
             --no-display-prompt \
             --single-turn \
             -ngl 99 \
-            2>&1)"; then
+            2>&1)"
+        _rocm_status=$?
+        if [[ "${_rocm_status}" -eq 0 ]]; then
             # Extract model response. Prefer conversation lines ("| ..."), then
             # fallback to last non-empty line to handle llama-cli output changes.
             _rocm_text="$(echo "${_rocm_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
@@ -3930,9 +4009,13 @@ print('PASS')
                 warn "llama.cpp ROCm: FAIL (empty output)"
                 echo "${_rocm_output}" | tail -n 40
             fi
+        elif [[ "${_rocm_status}" -eq 124 ]]; then
+            results[llamacpp_rocm]="FAIL"
+            warn "llama.cpp ROCm: FAIL (timeout after ${smoke_llamacpp_timeout}s; set SMOKE_LLAMACPP_TIMEOUT to increase)"
+            [[ -n "${_rocm_output:-}" ]] && echo "${_rocm_output}" | tail -n 40
         else
             results[llamacpp_rocm]="FAIL"
-            warn "llama.cpp ROCm: FAIL (inference error)"
+            warn "llama.cpp ROCm: FAIL (inference error, exit ${_rocm_status})"
             [[ -n "${_rocm_output:-}" ]] && echo "${_rocm_output}" | tail -n 40
         fi
     fi
@@ -3950,21 +4033,24 @@ print('PASS')
         results[llamacpp_vulkan]="SKIP"
         warn "llama.cpp Vulkan: SKIP (llama-cli not found at ${LLAMACPP_VULKAN_DIR}/llama-cli)"
     else
+        local smoke_llamacpp_timeout="${SMOKE_LLAMACPP_TIMEOUT:-180}"
         info "Running: ${LLAMACPP_VULKAN_DIR}/llama-cli -m ${gguf_file}"
         # Warmup: first run loads model weights and initializes Vulkan resources
         info "  Warmup pass..."
-        timeout 120 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
+        printf '/exit\n' | timeout -k 15 120 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
-        local _vulkan_output _vulkan_text
-        if _vulkan_output="$(timeout 60 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
+        local _vulkan_output _vulkan_text _vulkan_status
+        _vulkan_output="$(printf '/exit\n' | timeout -k 15 "${smoke_llamacpp_timeout}" "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
             -n "${max_tokens}" \
             --no-display-prompt \
             --single-turn \
             -ngl 99 \
-            2>&1)"; then
+            2>&1)"
+        _vulkan_status=$?
+        if [[ "${_vulkan_status}" -eq 0 ]]; then
             # Extract model response. Prefer conversation lines ("| ..."), then
             # fallback to last non-empty line to handle llama-cli output changes.
             _vulkan_text="$(echo "${_vulkan_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
@@ -3980,9 +4066,13 @@ print('PASS')
                 warn "llama.cpp Vulkan: FAIL (empty output)"
                 echo "${_vulkan_output}" | tail -n 40
             fi
+        elif [[ "${_vulkan_status}" -eq 124 ]]; then
+            results[llamacpp_vulkan]="FAIL"
+            warn "llama.cpp Vulkan: FAIL (timeout after ${smoke_llamacpp_timeout}s; set SMOKE_LLAMACPP_TIMEOUT to increase)"
+            [[ -n "${_vulkan_output:-}" ]] && echo "${_vulkan_output}" | tail -n 40
         else
             results[llamacpp_vulkan]="FAIL"
-            warn "llama.cpp Vulkan: FAIL (inference error)"
+            warn "llama.cpp Vulkan: FAIL (inference error, exit ${_vulkan_status})"
             [[ -n "${_vulkan_output:-}" ]] && echo "${_vulkan_output}" | tail -n 40
         fi
     fi
