@@ -3808,7 +3808,25 @@ print(path)
         info "vLLM: SKIP (SMOKE_SKIP_VLLM set)"
     else
 
-    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510.csv"
+    local vllm_runtime_versions
+    vllm_runtime_versions="$(
+        python -c "import torch, triton, vllm; print(f\"torch={torch.__version__} triton={triton.__version__} vllm={vllm.__version__}\")" 2>/dev/null
+    )"
+    if [[ -n "${vllm_runtime_versions}" ]]; then
+        info "vLLM runtime versions: ${vllm_runtime_versions}"
+    else
+        warn "vLLM runtime versions: unavailable (import failed)"
+    fi
+
+    local tunableop_stack_tag
+    tunableop_stack_tag="$(
+        python -c "import torch, triton; print(f\"torch{torch.__version__.split('+')[0]}_triton{triton.__version__}\")" 2>/dev/null \
+        | tr -c '[:alnum:]_.-' '_'
+    )"
+    if [[ -z "${tunableop_stack_tag}" ]]; then
+        tunableop_stack_tag="unknown_stack"
+    fi
+    local tunableop_csv="${VLLM_DIR}/tunableop_results_gfx11510_${tunableop_stack_tag}.csv"
     info "TunableOp CSV: ${tunableop_csv}"
 
     local _vllm_output
@@ -3876,9 +3894,17 @@ print('PASS')
             warn "vLLM smoke test full log: ${_vllm_log}"
             warn "vLLM smoke test tail (last 120 lines):"
             tail -n 120 "${_vllm_log}" || true
+            if grep -q "No module named 'triton.language.target_info'" "${_vllm_log}"; then
+                warn "Detected Triton target_info import errors."
+                warn "ROCm Triton intentionally does not ship CUDA-only target_info/gluon APIs."
+                warn "On this stack, treat these lines as compatibility noise unless followed by a hard runtime fault."
+            fi
+            if grep -qE 'Memory access fault by GPU|HSA_STATUS|hipError' "${_vllm_log}"; then
+                warn "Detected a hard GPU runtime fault during model bring-up (likely the true failure cause)."
+            fi
             if grep -q 'Engine core initialization failed' "${_vllm_log}"; then
                 warn "Detected vLLM core startup failure. Showing likely root-cause lines:"
-                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS' "${_vllm_log}" | tail -n 80 || true
+                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS|Memory access fault by GPU' "${_vllm_log}" | tail -n 80 || true
             fi
         fi
         results[vllm]="FAIL"
