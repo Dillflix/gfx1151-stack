@@ -3811,17 +3811,15 @@ print(path)
     if [[ -n "${smoke_rocm_gpu_index}" ]]; then
         local _rocm_visible_ok
         _rocm_visible_ok="$(
-            HIP_VISIBLE_DEVICES="${smoke_rocm_gpu_index}" ROCR_VISIBLE_DEVICES="${smoke_rocm_gpu_index}" \
+            HIP_VISIBLE_DEVICES="${smoke_rocm_gpu_index}" \
                 python -c "import torch; print(1 if torch.cuda.is_available() and torch.cuda.device_count() > 0 else 0)" 2>/dev/null
         )"
         if [[ "${_rocm_visible_ok}" == "1" ]]; then
             export HIP_VISIBLE_DEVICES="${smoke_rocm_gpu_index}"
-            export ROCR_VISIBLE_DEVICES="${smoke_rocm_gpu_index}"
             info "Pinned ROCm smoke backends to GPU index ${smoke_rocm_gpu_index}"
         else
             warn "ROCm index ${smoke_rocm_gpu_index} is not visible; falling back to ROCm index 0"
             export HIP_VISIBLE_DEVICES=0
-            export ROCR_VISIBLE_DEVICES=0
             info "Pinned ROCm smoke backends to GPU index 0"
         fi
     else
