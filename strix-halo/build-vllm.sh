@@ -3983,11 +3983,11 @@ print('PASS')
         info "Running: ${LLAMACPP_INSTALL_DIR}/llama-cli -m ${gguf_file}"
         # Warmup: first run loads model weights and initializes GPU buffers
         info "  Warmup pass..."
-        timeout -k 15 120 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
+        printf '/exit\n' | timeout -k 15 120 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
         local _rocm_output _rocm_text _rocm_status
-        _rocm_output="$(timeout -k 15 "${smoke_llamacpp_timeout}" "${LLAMACPP_INSTALL_DIR}/llama-cli" \
+        _rocm_output="$(printf '/exit\n' | timeout -k 15 "${smoke_llamacpp_timeout}" "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
             -n "${max_tokens}" \
@@ -4040,11 +4040,11 @@ print('PASS')
         info "Running: ${LLAMACPP_VULKAN_DIR}/llama-cli -m ${gguf_file}"
         # Warmup: first run loads model weights and initializes Vulkan resources
         info "  Warmup pass..."
-        timeout -k 15 120 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
+        printf '/exit\n' | timeout -k 15 120 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
         local _vulkan_output _vulkan_text _vulkan_status
-        _vulkan_output="$(timeout -k 15 "${smoke_llamacpp_timeout}" "${LLAMACPP_VULKAN_DIR}/llama-cli" \
+        _vulkan_output="$(printf '/exit\n' | timeout -k 15 "${smoke_llamacpp_timeout}" "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
             -n "${max_tokens}" \
