@@ -3824,6 +3824,9 @@ from vllm import LLM, SamplingParams
 print('Loading model: ${hf_model}')
 llm = LLM(
     model='${hf_model}',
+    # RDNA 3.5 runtime is noticeably more stable in fp16 during first-load
+    # smoke tests; bf16 defaults can trigger intermittent GPU page faults.
+    dtype='float16',
     max_model_len=512,
     gpu_memory_utilization=0.3,
     enforce_eager=True,  # No graph capture during tuning
@@ -3876,9 +3879,17 @@ print('PASS')
             warn "vLLM smoke test full log: ${_vllm_log}"
             warn "vLLM smoke test tail (last 120 lines):"
             tail -n 120 "${_vllm_log}" || true
+            if grep -q "No module named 'triton.language.target_info'" "${_vllm_log}"; then
+                warn "Detected Triton target_info import errors."
+                warn "ROCm Triton intentionally does not ship CUDA-only target_info/gluon APIs."
+                warn "On this stack, treat these lines as compatibility noise unless followed by a hard runtime fault."
+            fi
+            if grep -qE 'Memory access fault by GPU|HSA_STATUS|hipError' "${_vllm_log}"; then
+                warn "Detected a hard GPU runtime fault during model bring-up (likely the true failure cause)."
+            fi
             if grep -q 'Engine core initialization failed' "${_vllm_log}"; then
                 warn "Detected vLLM core startup failure. Showing likely root-cause lines:"
-                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS' "${_vllm_log}" | tail -n 80 || true
+                grep -nE 'Engine core initialization failed|Failed core proc|Traceback|ERROR|RuntimeError|ValueError|ImportError|ModuleNotFoundError|hipError|HSA_STATUS|Memory access fault by GPU' "${_vllm_log}" | tail -n 80 || true
             fi
         fi
         results[vllm]="FAIL"
