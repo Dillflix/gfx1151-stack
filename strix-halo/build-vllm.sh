@@ -3979,21 +3979,24 @@ print('PASS')
         results[llamacpp_rocm]="SKIP"
         warn "llama.cpp ROCm: SKIP (llama-cli not found at ${LLAMACPP_INSTALL_DIR}/llama-cli)"
     else
+        local smoke_llamacpp_timeout="${SMOKE_LLAMACPP_TIMEOUT:-180}"
         info "Running: ${LLAMACPP_INSTALL_DIR}/llama-cli -m ${gguf_file}"
         # Warmup: first run loads model weights and initializes GPU buffers
         info "  Warmup pass..."
         timeout 120 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
-        local _rocm_output _rocm_text
-        if _rocm_output="$(timeout 60 "${LLAMACPP_INSTALL_DIR}/llama-cli" \
+        local _rocm_output _rocm_text _rocm_status
+        _rocm_output="$(timeout "${smoke_llamacpp_timeout}" "${LLAMACPP_INSTALL_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
             -n "${max_tokens}" \
             --no-display-prompt \
             --single-turn \
             -ngl 99 \
-            2>&1)"; then
+            2>&1)"
+        _rocm_status=$?
+        if [[ "${_rocm_status}" -eq 0 ]]; then
             # Extract model response. Prefer conversation lines ("| ..."), then
             # fallback to last non-empty line to handle llama-cli output changes.
             _rocm_text="$(echo "${_rocm_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
@@ -4009,9 +4012,13 @@ print('PASS')
                 warn "llama.cpp ROCm: FAIL (empty output)"
                 echo "${_rocm_output}" | tail -n 40
             fi
+        elif [[ "${_rocm_status}" -eq 124 ]]; then
+            results[llamacpp_rocm]="FAIL"
+            warn "llama.cpp ROCm: FAIL (timeout after ${smoke_llamacpp_timeout}s; set SMOKE_LLAMACPP_TIMEOUT to increase)"
+            [[ -n "${_rocm_output:-}" ]] && echo "${_rocm_output}" | tail -n 40
         else
             results[llamacpp_rocm]="FAIL"
-            warn "llama.cpp ROCm: FAIL (inference error)"
+            warn "llama.cpp ROCm: FAIL (inference error, exit ${_rocm_status})"
             [[ -n "${_rocm_output:-}" ]] && echo "${_rocm_output}" | tail -n 40
         fi
     fi
@@ -4029,21 +4036,24 @@ print('PASS')
         results[llamacpp_vulkan]="SKIP"
         warn "llama.cpp Vulkan: SKIP (llama-cli not found at ${LLAMACPP_VULKAN_DIR}/llama-cli)"
     else
+        local smoke_llamacpp_timeout="${SMOKE_LLAMACPP_TIMEOUT:-180}"
         info "Running: ${LLAMACPP_VULKAN_DIR}/llama-cli -m ${gguf_file}"
         # Warmup: first run loads model weights and initializes Vulkan resources
         info "  Warmup pass..."
         timeout 120 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" -p "warmup" -n 1 --no-display-prompt --single-turn -ngl 99 \
             >/dev/null 2>&1 || true
-        local _vulkan_output _vulkan_text
-        if _vulkan_output="$(timeout 60 "${LLAMACPP_VULKAN_DIR}/llama-cli" \
+        local _vulkan_output _vulkan_text _vulkan_status
+        _vulkan_output="$(timeout "${smoke_llamacpp_timeout}" "${LLAMACPP_VULKAN_DIR}/llama-cli" \
             -m "${gguf_path}" \
             -p "${test_prompt}" \
             -n "${max_tokens}" \
             --no-display-prompt \
             --single-turn \
             -ngl 99 \
-            2>&1)"; then
+            2>&1)"
+        _vulkan_status=$?
+        if [[ "${_vulkan_status}" -eq 0 ]]; then
             # Extract model response. Prefer conversation lines ("| ..."), then
             # fallback to last non-empty line to handle llama-cli output changes.
             _vulkan_text="$(echo "${_vulkan_output}" | sed -n 's/^| *//p' | tr -d '\n' | head -c 200)"
@@ -4059,9 +4069,13 @@ print('PASS')
                 warn "llama.cpp Vulkan: FAIL (empty output)"
                 echo "${_vulkan_output}" | tail -n 40
             fi
+        elif [[ "${_vulkan_status}" -eq 124 ]]; then
+            results[llamacpp_vulkan]="FAIL"
+            warn "llama.cpp Vulkan: FAIL (timeout after ${smoke_llamacpp_timeout}s; set SMOKE_LLAMACPP_TIMEOUT to increase)"
+            [[ -n "${_vulkan_output:-}" ]] && echo "${_vulkan_output}" | tail -n 40
         else
             results[llamacpp_vulkan]="FAIL"
-            warn "llama.cpp Vulkan: FAIL (inference error)"
+            warn "llama.cpp Vulkan: FAIL (inference error, exit ${_vulkan_status})"
             [[ -n "${_vulkan_output:-}" ]] && echo "${_vulkan_output}" | tail -n 40
         fi
     fi
