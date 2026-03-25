@@ -3824,6 +3824,9 @@ from vllm import LLM, SamplingParams
 print('Loading model: ${hf_model}')
 llm = LLM(
     model='${hf_model}',
+    # RDNA 3.5 runtime is noticeably more stable in fp16 during first-load
+    # smoke tests; bf16 defaults can trigger intermittent GPU page faults.
+    dtype='float16',
     max_model_len=512,
     gpu_memory_utilization=0.3,
     enforce_eager=True,  # No graph capture during tuning
