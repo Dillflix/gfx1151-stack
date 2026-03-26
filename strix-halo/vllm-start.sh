@@ -63,6 +63,7 @@ VLLM_STARTUP_ERROR_TAIL_LINES="${VLLM_STARTUP_ERROR_TAIL_LINES:-120}"
 #   log_file - Path to vLLM instance log file
 vllm_print_startup_failure_details() {
     local log_file="$1"
+    local traceback_context_lines="${VLLM_STARTUP_TRACEBACK_CONTEXT_LINES:-40}"
 
     if [[ ! -f "${log_file}" ]]; then
         error "No startup log found at ${log_file}"
@@ -76,6 +77,17 @@ vllm_print_startup_failure_details() {
         | cut -d: -f1 || true)"
     if [[ -n "${first_traceback_line}" ]]; then
         error "First traceback starts at line ${first_traceback_line} in ${log_file}"
+
+        # Print focused context around the first traceback, because vLLM often
+        # reports the true engine/core failure immediately before it.
+        local context_start context_end
+        context_start=$(( first_traceback_line - traceback_context_lines ))
+        if [[ "${context_start}" -lt 1 ]]; then
+            context_start=1
+        fi
+        context_end=$(( first_traceback_line + traceback_context_lines ))
+        error "Context around first traceback (lines ${context_start}-${context_end}):"
+        sed -n "${context_start},${context_end}p" "${log_file}" >&2
     fi
 
     error "Last ${VLLM_STARTUP_ERROR_TAIL_LINES} lines from ${log_file}:"
