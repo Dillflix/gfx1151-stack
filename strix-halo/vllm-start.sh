@@ -56,6 +56,7 @@ VLLM_HOST="${VLLM_HOST:-0.0.0.0}"
 VLLM_STARTUP_TIMEOUT="${VLLM_STARTUP_TIMEOUT:-180}"
 VLLM_PREFIX_CACHING_HASH_ALGO="${VLLM_PREFIX_CACHING_HASH_ALGO:-xxhash}"
 VLLM_STARTUP_ERROR_TAIL_LINES="${VLLM_STARTUP_ERROR_TAIL_LINES:-120}"
+VLLM_MAX_GPU_MEMORY_UTILIZATION="${VLLM_MAX_GPU_MEMORY_UTILIZATION:-0.98}"
 
 # Print a startup failure summary from a vLLM log file.
 #
@@ -167,6 +168,10 @@ start_instance() {
         local total_mb utilization
         total_mb="$(vllm_gtt_total_mb)"
         utilization="$(vllm_mb_to_utilization "${gpu_memory_mb}" "${total_mb}")"
+        if [[ "$(echo "${utilization} > ${VLLM_MAX_GPU_MEMORY_UTILIZATION}" | bc)" -eq 1 ]]; then
+            warn "${role}: requested ${gpu_memory_mb}MB exceeds detected ${total_mb}MB; capping --gpu-memory-utilization to ${VLLM_MAX_GPU_MEMORY_UTILIZATION}"
+            utilization="${VLLM_MAX_GPU_MEMORY_UTILIZATION}"
+        fi
         cmd_args+=(--gpu-memory-utilization "${utilization}")
         info "${role}: GPU memory ${gpu_memory_mb}MB / ${total_mb}MB = ${utilization}"
     fi

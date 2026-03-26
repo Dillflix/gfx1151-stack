@@ -245,8 +245,9 @@ vllm_query_models() {
 # Returns:
 #   0 on success, dies if rocm-smi query fails
 vllm_gtt_total_mb() {
-    local gtt_bytes visible_device
+    local visible_device
     local -a rocm_smi_args=(--showmeminfo gtt)
+    local -a gtt_values=()
 
     # If HIP_VISIBLE_DEVICES is set, query the first selected GPU only.
     # This avoids multi-line output on multi-GPU hosts, which breaks arithmetic.
@@ -255,12 +256,35 @@ vllm_gtt_total_mb() {
         rocm_smi_args=(--device "${visible_device}" "${rocm_smi_args[@]}")
     fi
 
-    gtt_bytes="$(rocm-smi "${rocm_smi_args[@]}" 2>/dev/null \
-        | awk '/GTT Total Memory/ {print $NF; exit}' \
-        | tr -cd '0-9')"
-    if [[ -z "${gtt_bytes}" ]]; then
+    while IFS= read -r value; do
+        value="$(echo "${value}" | tr -cd '0-9')"
+        if [[ -n "${value}" ]]; then
+            gtt_values+=("${value}")
+        fi
+    done < <(rocm-smi "${rocm_smi_args[@]}" 2>/dev/null | awk '/GTT Total Memory/ {print $NF}')
+
+    if [[ "${#gtt_values[@]}" -eq 0 ]]; then
         die "Cannot query GTT memory from rocm-smi. Is ROCm installed?"
     fi
+
+    local gtt_bytes
+    if [[ "${#gtt_values[@]}" -eq 1 ]]; then
+        gtt_bytes="${gtt_values[0]}"
+    elif [[ -n "${visible_device}" ]]; then
+        # Some APUs expose multiple partitions for a single visible GPU; sum
+        # all reported slices so utilization math reflects the full pool.
+        local sum=0
+        local part
+        for part in "${gtt_values[@]}"; do
+            sum=$((sum + part))
+        done
+        gtt_bytes="${sum}"
+    else
+        # Without explicit device scoping, avoid summing across potentially
+        # unrelated GPUs by using the first reported device's value.
+        gtt_bytes="${gtt_values[0]}"
+    fi
+
     echo $(( gtt_bytes / 1048576 ))
 }
 
