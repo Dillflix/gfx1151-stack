@@ -245,10 +245,19 @@ vllm_query_models() {
 # Returns:
 #   0 on success, dies if rocm-smi query fails
 vllm_gtt_total_mb() {
-    local gtt_bytes
-    gtt_bytes="$(rocm-smi --showmeminfo gtt 2>/dev/null \
-        | grep "GTT Total Memory" \
-        | grep -oP '\d+$')"
+    local gtt_bytes visible_device
+    local -a rocm_smi_args=(--showmeminfo gtt)
+
+    # If HIP_VISIBLE_DEVICES is set, query the first selected GPU only.
+    # This avoids multi-line output on multi-GPU hosts, which breaks arithmetic.
+    visible_device="${HIP_VISIBLE_DEVICES%%,*}"
+    if [[ -n "${visible_device}" ]]; then
+        rocm_smi_args=(--device "${visible_device}" "${rocm_smi_args[@]}")
+    fi
+
+    gtt_bytes="$(rocm-smi "${rocm_smi_args[@]}" 2>/dev/null \
+        | awk '/GTT Total Memory/ {print $NF; exit}' \
+        | tr -cd '0-9')"
     if [[ -z "${gtt_bytes}" ]]; then
         die "Cannot query GTT memory from rocm-smi. Is ROCm installed?"
     fi
