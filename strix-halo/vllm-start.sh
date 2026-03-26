@@ -55,6 +55,45 @@ vllm_load_env "${ENV_FILE}"
 VLLM_HOST="${VLLM_HOST:-0.0.0.0}"
 VLLM_STARTUP_TIMEOUT="${VLLM_STARTUP_TIMEOUT:-180}"
 VLLM_PREFIX_CACHING_HASH_ALGO="${VLLM_PREFIX_CACHING_HASH_ALGO:-xxhash}"
+VLLM_STARTUP_ERROR_TAIL_LINES="${VLLM_STARTUP_ERROR_TAIL_LINES:-120}"
+VLLM_MAX_GPU_MEMORY_UTILIZATION="${VLLM_MAX_GPU_MEMORY_UTILIZATION:-0.98}"
+
+# Print a startup failure summary from a vLLM log file.
+#
+# Args:
+#   log_file - Path to vLLM instance log file
+vllm_print_startup_failure_details() {
+    local log_file="$1"
+    local traceback_context_lines="${VLLM_STARTUP_TRACEBACK_CONTEXT_LINES:-40}"
+
+    if [[ ! -f "${log_file}" ]]; then
+        error "No startup log found at ${log_file}"
+        return
+    fi
+
+    # vLLM often emits a generic RuntimeError at the end of startup failure.
+    # Printing where the first traceback starts helps locate root cause quickly.
+    local first_traceback_line
+    first_traceback_line="$(grep -n -m1 "Traceback (most recent call last)" "${log_file}" \
+        | cut -d: -f1 || true)"
+    if [[ -n "${first_traceback_line}" ]]; then
+        error "First traceback starts at line ${first_traceback_line} in ${log_file}"
+
+        # Print focused context around the first traceback, because vLLM often
+        # reports the true engine/core failure immediately before it.
+        local context_start context_end
+        context_start=$(( first_traceback_line - traceback_context_lines ))
+        if [[ "${context_start}" -lt 1 ]]; then
+            context_start=1
+        fi
+        context_end=$(( first_traceback_line + traceback_context_lines ))
+        error "Context around first traceback (lines ${context_start}-${context_end}):"
+        sed -n "${context_start},${context_end}p" "${log_file}" >&2
+    fi
+
+    error "Last ${VLLM_STARTUP_ERROR_TAIL_LINES} lines from ${log_file}:"
+    tail -"${VLLM_STARTUP_ERROR_TAIL_LINES}" "${log_file}" >&2
+}
 
 # =============================================================================
 # Instance Management
@@ -129,6 +168,10 @@ start_instance() {
         local total_mb utilization
         total_mb="$(vllm_gtt_total_mb)"
         utilization="$(vllm_mb_to_utilization "${gpu_memory_mb}" "${total_mb}")"
+        if [[ "$(echo "${utilization} > ${VLLM_MAX_GPU_MEMORY_UTILIZATION}" | bc)" -eq 1 ]]; then
+            warn "${role}: requested ${gpu_memory_mb}MB exceeds detected ${total_mb}MB; capping --gpu-memory-utilization to ${VLLM_MAX_GPU_MEMORY_UTILIZATION}"
+            utilization="${VLLM_MAX_GPU_MEMORY_UTILIZATION}"
+        fi
         cmd_args+=(--gpu-memory-utilization "${utilization}")
         info "${role}: GPU memory ${gpu_memory_mb}MB / ${total_mb}MB = ${utilization}"
     fi
@@ -163,11 +206,11 @@ start_instance() {
 
     # Failed: check if process died or timed out.
     if ! kill -0 "${instance_pid}" 2>/dev/null; then
-        error "vLLM ${role} (PID ${instance_pid}) died during startup. Last 30 lines:"
+        error "vLLM ${role} (PID ${instance_pid}) died during startup."
     else
-        error "vLLM ${role} did not become healthy within ${VLLM_STARTUP_TIMEOUT}s. Last 30 lines:"
+        error "vLLM ${role} did not become healthy within ${VLLM_STARTUP_TIMEOUT}s."
     fi
-    tail -30 "${log_file}" >&2
+    vllm_print_startup_failure_details "${log_file}"
     rm -f "${pid_file}"
     return 1
 }
