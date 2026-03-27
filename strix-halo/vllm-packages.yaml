@@ -1166,24 +1166,7 @@ packages:
           to raise "RuntimeError: Duplicate pattern" and crash the engine.
           This prevents torch.compile from working, forcing --enforce-eager.
 
-      # 10. Triton sampler bypass: gfx1151 page fault after torch.compile AOT
-      - type: sed
-        file: "vllm/v1/sample/ops/topk_topp_sampler.py"
-        marker: "NOTE(gfx1151)"
-        marker_absent: true
-        sed_command: >
-          /if HAS_TRITON and logits.shape\[0\] >= 8:/,+2{
-            s|    if HAS_TRITON.*|    # NOTE(gfx1151): The Triton top-k/top-p kernel page-faults on RDNA 3.5\n    # after torch.compile AOT compilation. Use the PyTorch sort path instead.\n    # if HAS_TRITON and logits.shape[0] >= 8:\n    #     return apply_top_k_top_p_triton(logits, k, p)|;
-            /return apply_top_k_top_p_triton/d
-          }
-        description: >
-          Comment out the Triton top-k/top-p sampler kernel path. On gfx1151,
-          the Triton kernel page-faults after torch.compile AOT compilation
-          has rewritten the sampling graph. The PyTorch sort-based path
-          (apply_top_k_top_p_pytorch) is functionally identical and works
-          correctly on all architectures.
-
-      # 11. FLA chunk_delta_h: AMD autotune restrict + exp() float32 cast
+      # 10. FLA chunk_delta_h: AMD autotune restrict + exp() float32 cast
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_delta_h.py"
         marker: "is_amd"
@@ -1193,7 +1176,7 @@ packages:
           Import is_amd flag from utils for conditional autotune configuration
           in chunk_delta_h.py. Part 1 of 3 for the FLA AMD fixes.
 
-      # 12. FLA chunk_delta_h: restrict autotune search on AMD
+      # 11. FLA chunk_delta_h: restrict autotune search on AMD
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_delta_h.py"
         marker: "if is_amd else"
@@ -1207,7 +1190,7 @@ packages:
           pipeline stages cause GPU page faults during autotuning on RDNA 3.5
           (gfx1151, wave32). The CDNA path (gfx9) retains the full search.
 
-      # 13. FLA chunk_delta_h: restrict BV autotune on AMD
+      # 12. FLA chunk_delta_h: restrict BV autotune on AMD
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_delta_h.py"
         marker: "\\[32\\] if is_amd"
@@ -1217,7 +1200,7 @@ packages:
           Restrict Triton autotune BV to 32 on AMD HIP. BV=64 with K>64
           produces kernels that page-fault on RDNA 3.5 during autotuning.
 
-      # 14. FLA chunk_delta_h: cast exp() operands to float32 on HIP
+      # 13. FLA chunk_delta_h: cast exp() operands to float32 on HIP
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_delta_h.py"
         marker: "b_g_diff"
@@ -1232,7 +1215,7 @@ packages:
           correctly for exp(scalar_bf16 - block_ptr_load_bf16), producing
           invalid IR. Explicit float32 cast also improves precision.
 
-      # 15. FLA chunk_delta_h: cast b_g_last to float32 in second exp()
+      # 14. FLA chunk_delta_h: cast b_g_last to float32 in second exp()
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_delta_h.py"
         marker: "b_g_last.to(tl.float32))"
@@ -1242,7 +1225,7 @@ packages:
           Cast b_g_last to float32 before the second exp() call in
           chunk_delta_h. Same type inference issue as patch 14.
 
-      # 16. FLA qwen3_next warmup: restrict to T=(64,)
+      # 15. FLA qwen3_next warmup: restrict to T=(64,)
       - type: sed
         file: "vllm/model_executor/models/qwen3_next.py"
         marker: "NOTE(gfx1151)"
@@ -1257,7 +1240,7 @@ packages:
           This only affects the warmup path -- actual inference always uses
           T >= chunk_size for prefill and the chunk loop for decode.
 
-      # 17. Rotary embedding: flash_attn import try/except
+      # 16. Rotary embedding: flash_attn import try/except
       - type: sed
         file: "vllm/model_executor/layers/rotary_embedding/common.py"
         marker: "flash_attn may be installed"
@@ -1274,7 +1257,7 @@ packages:
           flash_attn_2_cuda) fails with ImportError. The fallback is vLLM's
           own rotary implementation which works on all platforms.
 
-      # 18. AITER RMSNorm: Triton dispatch for gfx1x (fused_add variant)
+      # 17. AITER RMSNorm: Triton dispatch for gfx1x (fused_add variant)
       - type: file_rewrite
         file: "vllm/_aiter_ops.py"
         marker: "rmsnorm2d_fwd_with_add_dynamicquant"
@@ -1289,7 +1272,7 @@ packages:
           Complex multi-line replacement handled in build-vllm.sh with
           Python script (too complex for YAML sed expression).
 
-      # 19. AITER RMSNorm: Triton dispatch for gfx1x (plain variant)
+      # 18. AITER RMSNorm: Triton dispatch for gfx1x (plain variant)
       - type: file_rewrite
         file: "vllm/_aiter_ops.py"
         marker: "rmsnorm2d_fwd_with_dynamicquant"
@@ -1301,7 +1284,7 @@ packages:
           Applied together with patch 18 by the same Python script in
           build-vllm.sh.
 
-      # 20. FLA chunk_o.py: add is_amd import
+      # 19. FLA chunk_o.py: add is_amd import
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_o.py"
         marker: "is_amd"
@@ -1311,7 +1294,7 @@ packages:
           Add is_amd to the utils import in chunk_o.py. Required by patches
           21-23 which restrict autotune parameters on AMD HIP.
 
-      # 21. FLA chunk_o.py: restrict BK autotune on AMD
+      # 20. FLA chunk_o.py: restrict BK autotune on AMD
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_o.py"
         marker: "32\\] if is_amd else BKV_LIST"
@@ -1322,7 +1305,7 @@ packages:
           kernel page-faults during autotuning on RDNA 3.5 with BK>32 and
           num_stages>2. Same class of fix as chunk_delta_h patches 13-15.
 
-      # 22. FLA chunk_o.py: restrict BV autotune on AMD
+      # 21. FLA chunk_o.py: restrict BV autotune on AMD
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_o.py"
         marker: "32\\] if is_amd else BKV_LIST"
@@ -1333,7 +1316,7 @@ packages:
           patch 21 — large tile sizes produce code that causes GPU page faults
           during autotuning on RDNA 3.5 (wave32).
 
-      # 23. FLA chunk_o.py: restrict num_stages autotune on AMD
+      # 22. FLA chunk_o.py: restrict num_stages autotune on AMD
       - type: sed
         file: "vllm/model_executor/layers/fla/ops/chunk_o.py"
         marker: "\\[2\\] if is_amd"
@@ -1343,7 +1326,7 @@ packages:
           Restrict Triton autotune num_stages to 2 on AMD HIP. Higher pipeline
           stages produce code that page-faults on RDNA 3.5 during autotuning.
 
-      # 24. config/vllm.py: re-run hybrid alignment after platform config
+      # 23. config/vllm.py: re-run hybrid alignment after platform config
       - type: file_rewrite
         file: "vllm/config/vllm.py"
         marker: "Re-run hybrid alignment"
@@ -1358,7 +1341,7 @@ packages:
           Complex multi-line insertion handled in build-vllm.sh with
           Python script (too complex for YAML sed expression).
 
-      # 25. models/config.py: platform block_size as alignment minimum
+      # 24. models/config.py: platform block_size as alignment minimum
       - type: file_rewrite
         file: "vllm/model_executor/models/config.py"
         marker: "platform already set a minimum"
@@ -1375,7 +1358,7 @@ packages:
           Complex multi-line insertion handled in build-vllm.sh with
           Python script (too complex for YAML sed expression).
 
-      # 26. rocm.py: skip AITER attention backends for hybrid models [TESTING]
+      # 25. rocm.py: skip AITER attention backends for hybrid models [TESTING]
       - type: file_rewrite
         file: "vllm/platforms/rocm.py"
         marker: "_is_hybrid"
@@ -1391,7 +1374,7 @@ packages:
           Complex multi-line insertion handled in build-vllm.sh with
           Python script (too complex for YAML sed expression).
 
-      # 27. rocm_aiter_unified_attn.py: power-of-2 block_size check [TESTING]
+      # 26. rocm_aiter_unified_attn.py: power-of-2 block_size check [TESTING]
       - type: file_rewrite
         file: "vllm/v1/attention/backends/rocm_aiter_unified_attn.py"
         marker: "block_size - 1"
