@@ -281,6 +281,7 @@ start_instance() {
         && [[ "${VLLM_DISABLE_AITER_RMSNORM_ON_DUP_PATTERN:-0}" == "1" ]]; then
         enable_rmsnorm_retry="1"
     fi
+    local launch_with_rmsnorm_disabled=0
     local attempt
 
     for attempt in 1 2; do
@@ -288,7 +289,7 @@ start_instance() {
         info "Log file: ${log_file}"
 
         # Launch in background with per-process VLLM_TARGET_DEVICE.
-        if [[ "${attempt}" -eq 2 ]]; then
+        if [[ "${launch_with_rmsnorm_disabled}" -eq 1 ]]; then
             VLLM_TARGET_DEVICE="${device}" VLLM_ROCM_USE_AITER_RMSNORM=0 nohup "${cmd_args[@]}" > "${log_file}" 2>&1 &
         else
             VLLM_TARGET_DEVICE="${device}" nohup "${cmd_args[@]}" > "${log_file}" 2>&1 &
@@ -321,12 +322,13 @@ start_instance() {
 
         # Automatic one-time fallback for known duplicate pattern crash in
         # RocmAiterRMSNormQuantFusionPass.
-        if [[ "${attempt}" -eq 1 ]] \
-            && [[ "${VLLM_ROCM_USE_AITER_RMSNORM:-0}" == "1" ]] \
+        if [[ "${VLLM_ROCM_USE_AITER_RMSNORM:-0}" == "1" ]] \
             && vllm_is_aiter_rmsnorm_duplicate_pattern_failure "${log_file}"; then
             vllm_print_duplicate_pattern_diagnostics "${role}"
 
-            if [[ "${enable_rmsnorm_retry}" == "1" ]]; then
+            if [[ "${enable_rmsnorm_retry}" == "1" ]] \
+                && [[ "${launch_with_rmsnorm_disabled}" -eq 0 ]]; then
+                launch_with_rmsnorm_disabled=1
                 warn "${role}: detected AITER RMSNorm duplicate-pattern startup crash; retrying with VLLM_ROCM_USE_AITER_RMSNORM=0"
                 rm -f "${pid_file}"
                 continue

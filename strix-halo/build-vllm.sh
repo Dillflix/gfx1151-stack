@@ -2065,7 +2065,7 @@ patch_vllm_gfx1151() {
     log_step 21 "Patch vLLM for gfx1151 AITER support"
 
     # Apply all sed-type patches from YAML (AITER gfx1x imports, FA backend,
-    # ViT revert, rms_norm guard, fusion skip_duplicates, sampler bypass,
+    # ViT revert, rms_norm guard, fusion skip_duplicates,
     # FLA chunk_delta_h fixes, qwen3_next warmup restriction)
     apply_patches vllm "${VLLM_SRC}"
 
@@ -2586,9 +2586,44 @@ build_vllm() {
     if [[ -n "${_vllm_wheel}" ]]; then
         info "Installing vLLM wheel into build venv..."
         uv pip install --force-reinstall --no-deps "${_vllm_wheel}"
+        patch_installed_vllm_runtime
     fi
 
     cd "${VLLM_DIR}"
+}
+
+# Ensure the installed vLLM runtime contains skip_duplicates=True in
+# rocm_aiter_fusion.py. This guards against cases where the source tree was
+# patched but an older/unpatched wheel ended up active in site-packages.
+patch_installed_vllm_runtime() {
+    info "Verifying installed vLLM runtime patch state (rocm_aiter_fusion.py)..."
+
+    local fusion_file
+    fusion_file="$(python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("vllm.compilation.passes.fusion.rocm_aiter_fusion")
+print(spec.origin if spec and spec.origin else "")
+PY
+)"
+
+    if [[ -z "${fusion_file}" || ! -f "${fusion_file}" ]]; then
+        die "Could not locate installed rocm_aiter_fusion.py in active venv"
+    fi
+
+    if grep -q "skip_duplicates=True" "${fusion_file}"; then
+        success "Installed runtime already has skip_duplicates=True (${fusion_file})"
+        return
+    fi
+
+    warn "Installed runtime missing skip_duplicates=True; patching ${fusion_file}"
+    cp -f "${fusion_file}" "${fusion_file}.bak"
+    sed -i '/pm\.register_replacement(/,/)/{ s/pm_pass,$/pm_pass, skip_duplicates=True,/; s/pm_pass$/pm_pass, skip_duplicates=True/ }' "${fusion_file}"
+
+    if ! grep -q "skip_duplicates=True" "${fusion_file}"; then
+        die "Failed to patch installed rocm_aiter_fusion.py (backup at ${fusion_file}.bak)"
+    fi
+
+    success "Installed runtime patched with skip_duplicates=True (${fusion_file})"
 }
 
 # =============================================================================
