@@ -167,8 +167,18 @@ except Exception as exc:  # pragma: no cover - diagnostics only
     print(f"  diag  patch check:       <failed to read file: {exc}>")
     raise SystemExit(0)
 
-register_calls = len(re.findall(r"pm\\.register_replacement\\(", text))
-skip_dupe = len(re.findall(r"pm\\.register_replacement\\([^\\n]*skip_duplicates\\s*=\\s*True", text))
+try:
+    register_calls = len(re.findall(r"pm\.register_replacement\(", text))
+    skip_dupe = len(
+        re.findall(
+            r"pm\.register_replacement\([^\n]*skip_duplicates\s*=\s*True",
+            text,
+        )
+    )
+except re.error as exc:  # pragma: no cover - diagnostics only
+    print(f"  diag  regex check:       <failed: {exc}>")
+    raise SystemExit(0)
+
 print("  diag  register calls:    ", register_calls)
 print("  diag  skip_duplicates=:  ", skip_dupe)
 
