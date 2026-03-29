@@ -115,21 +115,6 @@ vllm_is_aiter_rmsnorm_duplicate_pattern_failure() {
         && grep -q "check_and_add_duplicate_pattern" "${log_file}"
 }
 
-# Detect GPU memory access faults during startup compile/warmup.
-#
-# Args:
-#   log_file - Path to vLLM instance log file
-# Returns:
-#   0 if GPU memory fault signature found, 1 otherwise
-vllm_is_gpu_memory_fault_failure() {
-    local log_file="$1"
-
-    [[ -f "${log_file}" ]] || return 1
-
-    grep -q "Memory access fault by GPU" "${log_file}" \
-        || grep -q "GPU core dump failed" "${log_file}"
-}
-
 # Print targeted diagnostics for the duplicate-pattern startup crash.
 #
 # This focuses on root-cause indicators instead of only applying fallbacks:
@@ -297,11 +282,9 @@ start_instance() {
         enable_rmsnorm_retry="1"
     fi
     local launch_with_rmsnorm_disabled=0
-    local launch_safe_attention=0
-    local launch_eager_mode=0
     local attempt
 
-    for attempt in 1 2 3 4; do
+    for attempt in 1 2; do
         info "Starting vLLM ${role}: ${model} on ${device}:${port}"
         info "Log file: ${log_file}"
 
@@ -311,16 +294,6 @@ start_instance() {
         )
         if [[ "${launch_with_rmsnorm_disabled}" -eq 1 ]]; then
             launch_env+=(VLLM_ROCM_USE_AITER_RMSNORM=0)
-        fi
-        if [[ "${launch_safe_attention}" -eq 1 ]]; then
-            launch_env+=(
-                VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION=0
-                VLLM_ROCM_USE_AITER_MHA=0
-                VLLM_USE_TRITON_FLASH_ATTN=1
-            )
-        fi
-        if [[ "${launch_eager_mode}" -eq 1 ]]; then
-            launch_env+=(TORCH_COMPILE_DISABLE=1)
         fi
         env "${launch_env[@]}" nohup "${cmd_args[@]}" > "${log_file}" 2>&1 &
 
@@ -364,21 +337,6 @@ start_instance() {
             fi
             warn "${role}: detected AITER RMSNorm duplicate-pattern startup crash"
             warn "${role}: retry fallback is disabled (set VLLM_ENABLE_AITER_RMSNORM_DUP_PATTERN_RETRY=1 to enable one-time retry)"
-        fi
-
-        if vllm_is_gpu_memory_fault_failure "${log_file}"; then
-            if [[ "${launch_safe_attention}" -eq 0 ]]; then
-                launch_safe_attention=1
-                warn "${role}: detected GPU memory fault during startup; retrying with AITER attention disabled (UNIFIED_ATTENTION=0, MHA=0)"
-                rm -f "${pid_file}"
-                continue
-            fi
-            if [[ "${launch_eager_mode}" -eq 0 ]]; then
-                launch_eager_mode=1
-                warn "${role}: GPU memory fault persisted; retrying with TORCH_COMPILE_DISABLE=1"
-                rm -f "${pid_file}"
-                continue
-            fi
         fi
 
         vllm_print_startup_failure_details "${log_file}"
