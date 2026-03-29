@@ -1008,6 +1008,7 @@ packages:
   vllm:
     repo: "https://github.com/vllm-project/vllm.git"
     src_dir: "vllm"
+    clean_generated: true
     method: pip
     phase: E
     steps: [20, 21, 22, 23, 24, 25]
