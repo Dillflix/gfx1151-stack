@@ -140,9 +140,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   speedup (137 -> 1060 tok/s on Qwen2.5-0.5B).
 - **Duplicate pattern registration crash** (BUILD-FIXES.md #39): AITER fusion
   pass registered identical patterns, fixed with `skip_duplicates=True`.
-- **Triton sampler page fault** (BUILD-FIXES.md #41): Triton top-k/top-p kernel
-  page-faults on gfx1151 after torch.compile AOT. Bypassed to PyTorch
-  sort-based path.
+- **Triton sampler page fault** (BUILD-FIXES.md #41): Reframed as a
+  build-specific stack-compatibility issue (not a universal gfx1151 rule).
+  Removed the blanket sampler-bypass patch from the YAML patch set so
+  Triton sampler remains enabled by default.
 - **FLA autotuner page faults** (BUILD-FIXES.md #42, #49): Restricted AMD
   autotuning to `num_stages=2`, `BV=32` to stay within RDNA 3.5 register
   pressure limits.
