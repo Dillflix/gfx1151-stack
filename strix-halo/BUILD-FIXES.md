@@ -843,21 +843,21 @@ pass as a single HIPGraph) combined with ALL AITER optimizations
 (attention, GEMM, normalization). Previously, the `+rms_norm` bug forced
 PIECEWISE graph mode with AITER disabled.
 
-### 41. Triton sampler page fault on gfx1151 (Patch 10)
+### 41. Triton sampler page fault on gfx1151 (historical, build-specific)
 
-**Symptom**: GPU page fault during top-k/top-p sampling after torch.compile
-AOT compilation on RDNA 3.5.
+**Symptom**: Some builds observed GPU page faults during top-k/top-p sampling
+after torch.compile AOT compilation on RDNA 3.5.
 
-**Root cause**: The Triton top-k/top-p sampler kernel
-(`apply_top_k_top_p_triton`) page-faults on gfx1151 after ahead-of-time
-compilation by torch.compile. The kernel works in eager mode but the
-compiled version triggers an illegal memory access on RDNA 3.5's wave32
-architecture.
+**Root cause**: This is not a universal hardware limitation. It is a stack
+compatibility issue (specific vLLM/PyTorch/Triton/AITER combinations and
+cached compile artifacts), where the compiled sampler path can diverge from
+its eager behavior. On other builds of the same hardware/OS, the Triton
+sampler works correctly.
 
-**Fix**: Bypass the Triton sampler in
-`vllm/v1/sample/ops/topk_topp_sampler.py`. The PyTorch sort-based path
-(`topk` + `cumsum`) is functionally identical and works on all
-architectures.
+**Current approach**: Do **not** hard-disable Triton sampler in the build
+patch set. Keep upstream behavior by default and treat sampler faults as an
+investigation target (version skew, patch skew, stale compile cache, and
+backend selection), not a blanket architecture rule.
 
 ### 42. FLA chunk_delta_h autotuner + exp() type inference (Patches 11-15)
 
