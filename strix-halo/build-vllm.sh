@@ -2065,7 +2065,7 @@ patch_vllm_gfx1151() {
     log_step 21 "Patch vLLM for gfx1151 AITER support"
 
     # Apply all sed-type patches from YAML (AITER gfx1x imports, FA backend,
-    # ViT revert, rms_norm guard, fusion skip_duplicates, sampler bypass,
+    # ViT revert, rms_norm guard, fusion skip_duplicates,
     # FLA chunk_delta_h fixes, qwen3_next warmup restriction)
     apply_patches vllm "${VLLM_SRC}"
 
@@ -2586,9 +2586,232 @@ build_vllm() {
     if [[ -n "${_vllm_wheel}" ]]; then
         info "Installing vLLM wheel into build venv..."
         uv pip install --force-reinstall --no-deps "${_vllm_wheel}"
+        patch_installed_vllm_runtime
     fi
 
     cd "${VLLM_DIR}"
+}
+
+# Ensure the installed vLLM runtime contains skip_duplicates=True in
+# rocm_aiter_fusion.py. This guards against cases where the source tree was
+# patched but an older/unpatched wheel ended up active in site-packages.
+patch_installed_vllm_runtime() {
+    info "Verifying installed vLLM runtime patch state (rocm_aiter_fusion.py)..."
+
+    local fusion_file
+    fusion_file="$(python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("vllm.compilation.passes.fusion.rocm_aiter_fusion")
+print(spec.origin if spec and spec.origin else "")
+PY
+)"
+
+    if [[ -z "${fusion_file}" || ! -f "${fusion_file}" ]]; then
+        die "Could not locate installed rocm_aiter_fusion.py in active venv"
+    fi
+
+    if grep -q "skip_duplicates=True" "${fusion_file}"; then
+        success "Installed runtime already has skip_duplicates=True (${fusion_file})"
+        return
+    fi
+
+    warn "Installed runtime missing skip_duplicates=True; patching ${fusion_file}"
+    cp -f "${fusion_file}" "${fusion_file}.bak"
+    sed -i '/pm\.register_replacement(/,/)/{ s/pm_pass,$/pm_pass, skip_duplicates=True,/; s/pm_pass$/pm_pass, skip_duplicates=True/ }' "${fusion_file}"
+
+    if ! grep -q "skip_duplicates=True" "${fusion_file}"; then
+        die "Failed to patch installed rocm_aiter_fusion.py (backup at ${fusion_file}.bak)"
+    fi
+
+    success "Installed runtime patched with skip_duplicates=True (${fusion_file})"
+
+    # -------------------------------------------------------------------------
+    # Installed rocm.py hybrid-attention guard (critical for gfx1151 stability)
+    # -------------------------------------------------------------------------
+    local rocm_py
+    rocm_py="$(python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("vllm.platforms.rocm")
+print(spec.origin if spec and spec.origin else "")
+PY
+)"
+    if [[ -z "${rocm_py}" || ! -f "${rocm_py}" ]]; then
+        die "Could not locate installed vllm/platforms/rocm.py in active venv"
+    fi
+
+    if ! grep -q "_is_hybrid" "${rocm_py}"; then
+        warn "Installed rocm.py missing hybrid-attention guard; patching ${rocm_py}"
+        python3 - <<PY
+from pathlib import Path
+
+path = Path("${rocm_py}")
+content = path.read_text()
+old = '''    backends = []
+
+    # Priority 1: Check for AITER Unified Attention (must check before MHA)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION:
+        backends.append(AttentionBackendEnum.ROCM_AITER_UNIFIED_ATTN)
+
+    # Priority 2: Check for AITER MHA (Flash Attention)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_MHA:
+        backends.append(AttentionBackendEnum.ROCM_AITER_FA)
+
+    # Priority 3: Check for ROCM_ATTN (prefill-decode split)
+    from vllm.config import get_current_vllm_config_or_none
+
+    vllm_config = get_current_vllm_config_or_none()'''
+
+new = '''    backends = []
+
+    from vllm.config import get_current_vllm_config_or_none
+
+    vllm_config = get_current_vllm_config_or_none()
+
+    # Hybrid models (e.g. Qwen3.5 GDN) compute non-power-of-2 block sizes
+    # from mamba state alignment. AITER unified attention and AITER FA both
+    # use TILE_SIZE = block_size in Triton kernels, which requires a power
+    # of 2 and small enough to fit in LDS. Skip AITER attention backends
+    # for hybrid models and fall through to TRITON_ATTN.
+    _is_hybrid = (
+        vllm_config is not None
+        and vllm_config.model_config is not None
+        and vllm_config.model_config.is_hybrid
+    )
+
+    # Priority 1: Check for AITER Unified Attention (must check before MHA)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION and not _is_hybrid:
+        backends.append(AttentionBackendEnum.ROCM_AITER_UNIFIED_ATTN)
+
+    # Priority 2: Check for AITER MHA (Flash Attention)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_MHA and not _is_hybrid:
+        backends.append(AttentionBackendEnum.ROCM_AITER_FA)
+
+    # Priority 3: Check for ROCM_ATTN (prefill-decode split)'''
+
+if old not in content:
+    raise SystemExit("rocm.py patch pattern not found")
+content = content.replace(old, new, 1)
+path.write_text(content)
+PY
+    fi
+
+    if ! grep -q "_is_hybrid" "${rocm_py}"; then
+        die "Installed rocm.py still missing hybrid-attention guard (${rocm_py})"
+    fi
+    success "Installed runtime includes hybrid-attention guard (${rocm_py})"
+
+    # -------------------------------------------------------------------------
+    # Installed _aiter_ops.py RMSNorm gfx1x dispatch guard
+    # -------------------------------------------------------------------------
+    local aiter_ops_py
+    aiter_ops_py="$(python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("vllm._aiter_ops")
+print(spec.origin if spec and spec.origin else "")
+PY
+)"
+    if [[ -z "${aiter_ops_py}" || ! -f "${aiter_ops_py}" ]]; then
+        die "Could not locate installed vllm/_aiter_ops.py in active venv"
+    fi
+
+    if ! grep -q "aiter.ops.triton.normalization.rmsnorm" "${aiter_ops_py}"; then
+        warn "Installed _aiter_ops.py missing gfx1x RMSNorm dispatch guard; patching ${aiter_ops_py}"
+        python3 - <<PY
+from pathlib import Path
+
+path = Path("${aiter_ops_py}")
+content = path.read_text()
+
+old1 = '''    import aiter as rocm_aiter
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+    residual_out = torch.empty_like(x)
+
+    rocm_aiter.rmsnorm2d_fwd_with_add_dynamicquant(
+        out,
+        x,
+        residual,
+        residual_out,
+        y_scale,
+        weight,
+        epsilon,
+        use_model_sensitive_rmsnorm=0,
+    )
+
+    return out, residual_out, y_scale'''
+
+new1 = '''    from vllm.platforms.rocm import on_gfx1x
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+    residual_out = torch.empty_like(x)
+
+    if on_gfx1x():
+        from aiter.ops.triton.normalization.rmsnorm import (
+            rmsnorm2d_fwd_with_add_dynamicquant,
+        )
+        rmsnorm2d_fwd_with_add_dynamicquant(
+            out, x, residual, residual_out, y_scale, weight, epsilon,
+        )
+    else:
+        import aiter as rocm_aiter
+        rocm_aiter.rmsnorm2d_fwd_with_add_dynamicquant(
+            out, x, residual, residual_out, y_scale, weight, epsilon,
+            use_model_sensitive_rmsnorm=0,
+        )
+
+    return out, residual_out, y_scale'''
+
+old2 = '''    import aiter as rocm_aiter
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+
+    rocm_aiter.rmsnorm2d_fwd_with_dynamicquant(
+        out, x, y_scale, weight, epsilon, use_model_sensitive_rmsnorm=0
+    )
+
+    return out, y_scale'''
+
+new2 = '''    from vllm.platforms.rocm import on_gfx1x
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+
+    if on_gfx1x():
+        from aiter.ops.triton.normalization.rmsnorm import (
+            rmsnorm2d_fwd_with_dynamicquant,
+        )
+        rmsnorm2d_fwd_with_dynamicquant(out, x, y_scale, weight, epsilon)
+    else:
+        import aiter as rocm_aiter
+        rocm_aiter.rmsnorm2d_fwd_with_dynamicquant(
+            out, x, y_scale, weight, epsilon, use_model_sensitive_rmsnorm=0
+        )
+
+    return out, y_scale'''
+
+if old1 not in content or old2 not in content:
+    raise SystemExit("_aiter_ops.py patch pattern not found")
+
+content = content.replace(old1, new1, 1).replace(old2, new2, 1)
+path.write_text(content)
+PY
+    fi
+
+    if ! grep -q "aiter.ops.triton.normalization.rmsnorm" "${aiter_ops_py}"; then
+        die "Installed _aiter_ops.py still missing gfx1x RMSNorm dispatch guard (${aiter_ops_py})"
+    fi
+    success "Installed runtime includes gfx1x RMSNorm dispatch guard (${aiter_ops_py})"
 }
 
 # =============================================================================
@@ -3506,26 +3729,40 @@ else:
     print(f'  Python: WARNING — may not be from source build')
 "
 
-    # Check PyTorch was built from source (not pip wheel)
+    # Check PyTorch provenance.
+    # Note: source-built wheels are installed into site-packages, so __file__
+    # will not point into /opt/src/vllm/pytorch even for source builds.
     python -c "
 import torch
 loc = torch.__file__
+ver = getattr(torch, '__version__', '<unknown>')
 print(f'  PyTorch location: {loc}')
-if '/opt/src/vllm/pytorch/' in loc:
+if '/opt/src/vllm/.venv/' in loc and ('+git' in ver or '.dev' in ver):
+    print(f'  PyTorch version: {ver}')
+    print('  PyTorch: BUILT FROM SOURCE (installed source wheel)')
+elif '/opt/src/vllm/pytorch/' in loc:
     print('  PyTorch: BUILT FROM SOURCE (ROCm fork)')
 else:
-    print(f'  PyTorch: WARNING — may not be from source build')
+    print(f'  PyTorch version: {ver}')
+    print(f'  PyTorch: WARNING — provenance unclear (installed path does not prove source build)')
 "
 
-    # Check Triton
+    # Check Triton provenance.
+    # Same caveat as PyTorch: source-built Triton is still installed into
+    # site-packages.
     python -c "
 import triton
 loc = triton.__file__
+ver = getattr(triton, '__version__', '<unknown>')
 print(f'  Triton location: {loc}')
-if '/opt/src/vllm/triton/' in loc:
+if '/opt/src/vllm/.venv/' in loc and ('+git' in ver or '.dev' in ver):
+    print(f'  Triton version: {ver}')
+    print('  Triton: BUILT FROM SOURCE (installed source wheel)')
+elif '/opt/src/vllm/triton/' in loc:
     print('  Triton: BUILT FROM SOURCE (ROCm fork)')
 else:
-    print(f'  Triton: WARNING — may not be from source build')
+    print(f'  Triton version: {ver}')
+    print(f'  Triton: WARNING — provenance unclear (installed path does not prove source build)')
 "
 
     # Check Flash Attention
