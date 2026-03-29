@@ -3729,26 +3729,40 @@ else:
     print(f'  Python: WARNING — may not be from source build')
 "
 
-    # Check PyTorch was built from source (not pip wheel)
+    # Check PyTorch provenance.
+    # Note: source-built wheels are installed into site-packages, so __file__
+    # will not point into /opt/src/vllm/pytorch even for source builds.
     python -c "
 import torch
 loc = torch.__file__
+ver = getattr(torch, '__version__', '<unknown>')
 print(f'  PyTorch location: {loc}')
-if '/opt/src/vllm/pytorch/' in loc:
+if '/opt/src/vllm/.venv/' in loc and ('+git' in ver or '.dev' in ver):
+    print(f'  PyTorch version: {ver}')
+    print('  PyTorch: BUILT FROM SOURCE (installed source wheel)')
+elif '/opt/src/vllm/pytorch/' in loc:
     print('  PyTorch: BUILT FROM SOURCE (ROCm fork)')
 else:
-    print(f'  PyTorch: WARNING — may not be from source build')
+    print(f'  PyTorch version: {ver}')
+    print(f'  PyTorch: WARNING — provenance unclear (installed path does not prove source build)')
 "
 
-    # Check Triton
+    # Check Triton provenance.
+    # Same caveat as PyTorch: source-built Triton is still installed into
+    # site-packages.
     python -c "
 import triton
 loc = triton.__file__
+ver = getattr(triton, '__version__', '<unknown>')
 print(f'  Triton location: {loc}')
-if '/opt/src/vllm/triton/' in loc:
+if '/opt/src/vllm/.venv/' in loc and ('+git' in ver or '.dev' in ver):
+    print(f'  Triton version: {ver}')
+    print('  Triton: BUILT FROM SOURCE (installed source wheel)')
+elif '/opt/src/vllm/triton/' in loc:
     print('  Triton: BUILT FROM SOURCE (ROCm fork)')
 else:
-    print(f'  Triton: WARNING — may not be from source build')
+    print(f'  Triton version: {ver}')
+    print(f'  Triton: WARNING — provenance unclear (installed path does not prove source build)')
 "
 
     # Check Flash Attention
