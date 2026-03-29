@@ -289,11 +289,13 @@ start_instance() {
         info "Log file: ${log_file}"
 
         # Launch in background with per-process VLLM_TARGET_DEVICE.
+        local -a launch_env=(
+            VLLM_TARGET_DEVICE="${device}"
+        )
         if [[ "${launch_with_rmsnorm_disabled}" -eq 1 ]]; then
-            VLLM_TARGET_DEVICE="${device}" VLLM_ROCM_USE_AITER_RMSNORM=0 nohup "${cmd_args[@]}" > "${log_file}" 2>&1 &
-        else
-            VLLM_TARGET_DEVICE="${device}" nohup "${cmd_args[@]}" > "${log_file}" 2>&1 &
+            launch_env+=(VLLM_ROCM_USE_AITER_RMSNORM=0)
         fi
+        env "${launch_env[@]}" nohup "${cmd_args[@]}" > "${log_file}" 2>&1 &
 
         local instance_pid=$!
         echo "${instance_pid}" > "${pid_file}"

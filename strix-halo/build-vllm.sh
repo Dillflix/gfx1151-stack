@@ -2624,6 +2624,81 @@ PY
     fi
 
     success "Installed runtime patched with skip_duplicates=True (${fusion_file})"
+
+    # -------------------------------------------------------------------------
+    # Installed rocm.py hybrid-attention guard (critical for gfx1151 stability)
+    # -------------------------------------------------------------------------
+    local rocm_py
+    rocm_py="$(python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("vllm.platforms.rocm")
+print(spec.origin if spec and spec.origin else "")
+PY
+)"
+    if [[ -z "${rocm_py}" || ! -f "${rocm_py}" ]]; then
+        die "Could not locate installed vllm/platforms/rocm.py in active venv"
+    fi
+
+    if ! grep -q "_is_hybrid" "${rocm_py}"; then
+        warn "Installed rocm.py missing hybrid-attention guard; patching ${rocm_py}"
+        python3 - <<PY
+from pathlib import Path
+
+path = Path("${rocm_py}")
+content = path.read_text()
+old = '''    backends = []
+
+    # Priority 1: Check for AITER Unified Attention (must check before MHA)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION:
+        backends.append(AttentionBackendEnum.ROCM_AITER_UNIFIED_ATTN)
+
+    # Priority 2: Check for AITER MHA (Flash Attention)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_MHA:
+        backends.append(AttentionBackendEnum.ROCM_AITER_FA)
+
+    # Priority 3: Check for ROCM_ATTN (prefill-decode split)
+    from vllm.config import get_current_vllm_config_or_none
+
+    vllm_config = get_current_vllm_config_or_none()'''
+
+new = '''    backends = []
+
+    from vllm.config import get_current_vllm_config_or_none
+
+    vllm_config = get_current_vllm_config_or_none()
+
+    # Hybrid models (e.g. Qwen3.5 GDN) compute non-power-of-2 block sizes
+    # from mamba state alignment. AITER unified attention and AITER FA both
+    # use TILE_SIZE = block_size in Triton kernels, which requires a power
+    # of 2 and small enough to fit in LDS. Skip AITER attention backends
+    # for hybrid models and fall through to TRITON_ATTN.
+    _is_hybrid = (
+        vllm_config is not None
+        and vllm_config.model_config is not None
+        and vllm_config.model_config.is_hybrid
+    )
+
+    # Priority 1: Check for AITER Unified Attention (must check before MHA)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_UNIFIED_ATTENTION and not _is_hybrid:
+        backends.append(AttentionBackendEnum.ROCM_AITER_UNIFIED_ATTN)
+
+    # Priority 2: Check for AITER MHA (Flash Attention)
+    if envs.VLLM_ROCM_USE_AITER and envs.VLLM_ROCM_USE_AITER_MHA and not _is_hybrid:
+        backends.append(AttentionBackendEnum.ROCM_AITER_FA)
+
+    # Priority 3: Check for ROCM_ATTN (prefill-decode split)'''
+
+if old not in content:
+    raise SystemExit("rocm.py patch pattern not found")
+content = content.replace(old, new, 1)
+path.write_text(content)
+PY
+    fi
+
+    if ! grep -q "_is_hybrid" "${rocm_py}"; then
+        die "Installed rocm.py still missing hybrid-attention guard (${rocm_py})"
+    fi
+    success "Installed runtime includes hybrid-attention guard (${rocm_py})"
 }
 
 # =============================================================================
