@@ -2699,6 +2699,119 @@ PY
         die "Installed rocm.py still missing hybrid-attention guard (${rocm_py})"
     fi
     success "Installed runtime includes hybrid-attention guard (${rocm_py})"
+
+    # -------------------------------------------------------------------------
+    # Installed _aiter_ops.py RMSNorm gfx1x dispatch guard
+    # -------------------------------------------------------------------------
+    local aiter_ops_py
+    aiter_ops_py="$(python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("vllm._aiter_ops")
+print(spec.origin if spec and spec.origin else "")
+PY
+)"
+    if [[ -z "${aiter_ops_py}" || ! -f "${aiter_ops_py}" ]]; then
+        die "Could not locate installed vllm/_aiter_ops.py in active venv"
+    fi
+
+    if ! grep -q "aiter.ops.triton.normalization.rmsnorm" "${aiter_ops_py}"; then
+        warn "Installed _aiter_ops.py missing gfx1x RMSNorm dispatch guard; patching ${aiter_ops_py}"
+        python3 - <<PY
+from pathlib import Path
+
+path = Path("${aiter_ops_py}")
+content = path.read_text()
+
+old1 = '''    import aiter as rocm_aiter
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+    residual_out = torch.empty_like(x)
+
+    rocm_aiter.rmsnorm2d_fwd_with_add_dynamicquant(
+        out,
+        x,
+        residual,
+        residual_out,
+        y_scale,
+        weight,
+        epsilon,
+        use_model_sensitive_rmsnorm=0,
+    )
+
+    return out, residual_out, y_scale'''
+
+new1 = '''    from vllm.platforms.rocm import on_gfx1x
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+    residual_out = torch.empty_like(x)
+
+    if on_gfx1x():
+        from aiter.ops.triton.normalization.rmsnorm import (
+            rmsnorm2d_fwd_with_add_dynamicquant,
+        )
+        rmsnorm2d_fwd_with_add_dynamicquant(
+            out, x, residual, residual_out, y_scale, weight, epsilon,
+        )
+    else:
+        import aiter as rocm_aiter
+        rocm_aiter.rmsnorm2d_fwd_with_add_dynamicquant(
+            out, x, residual, residual_out, y_scale, weight, epsilon,
+            use_model_sensitive_rmsnorm=0,
+        )
+
+    return out, residual_out, y_scale'''
+
+old2 = '''    import aiter as rocm_aiter
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+
+    rocm_aiter.rmsnorm2d_fwd_with_dynamicquant(
+        out, x, y_scale, weight, epsilon, use_model_sensitive_rmsnorm=0
+    )
+
+    return out, y_scale'''
+
+new2 = '''    from vllm.platforms.rocm import on_gfx1x
+
+    assert quant_dtype in [torch.int8, FP8_DTYPE]
+
+    y_scale = torch.empty(x.shape[0], 1, dtype=torch.float32, device=x.device)
+    out = torch.empty(x.shape, dtype=quant_dtype, device=x.device)
+
+    if on_gfx1x():
+        from aiter.ops.triton.normalization.rmsnorm import (
+            rmsnorm2d_fwd_with_dynamicquant,
+        )
+        rmsnorm2d_fwd_with_dynamicquant(out, x, y_scale, weight, epsilon)
+    else:
+        import aiter as rocm_aiter
+        rocm_aiter.rmsnorm2d_fwd_with_dynamicquant(
+            out, x, y_scale, weight, epsilon, use_model_sensitive_rmsnorm=0
+        )
+
+    return out, y_scale'''
+
+if old1 not in content or old2 not in content:
+    raise SystemExit("_aiter_ops.py patch pattern not found")
+
+content = content.replace(old1, new1, 1).replace(old2, new2, 1)
+path.write_text(content)
+PY
+    fi
+
+    if ! grep -q "aiter.ops.triton.normalization.rmsnorm" "${aiter_ops_py}"; then
+        die "Installed _aiter_ops.py still missing gfx1x RMSNorm dispatch guard (${aiter_ops_py})"
+    fi
+    success "Installed runtime includes gfx1x RMSNorm dispatch guard (${aiter_ops_py})"
 }
 
 # =============================================================================
